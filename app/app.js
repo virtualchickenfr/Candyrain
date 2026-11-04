@@ -457,7 +457,7 @@ let idleTimer;
 }));
 
 document.addEventListener("keydown", (e) => {
-  if ($("#view-player").hidden || e.target.matches("input[type=text], input[type=url], input[type=search]")) return;
+  if ($("#view-player").hidden || $("dialog[open]") || e.target.matches("input[type=text], input[type=url], input[type=search]")) return;
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   if (e.code === "ArrowLeft") engine.seek(engine.time - 5);
   if (e.code === "ArrowRight") engine.seek(engine.time + 5);
