@@ -176,6 +176,42 @@ def lines_from_lrc(synced: list[tuple[float, str]], duration: float) -> list[dic
     return lines
 
 
+def _fix_with_lrc(lines: list[dict], synced: list[tuple[float, str]], duration: float,
+                  tol: float = 1.5) -> list[dict]:
+    """Zeilen, deren Wort-Timing stark von der LRC-Zeit abweicht, durch LRC-Timing ersetzen."""
+    lrc = [(t, txt) for t, txt in synced if txt and not _SECTION.match(txt)]
+    if len(lrc) != len(lines):
+        return lines
+    fallback = lines_from_lrc(synced, duration)
+    if len(fallback) != len(lines):
+        return lines
+    fixed, out = 0, []
+    for ln, (t, _), fb in zip(lines, lrc, fallback):
+        if abs(ln["start"] - t) > tol:
+            # Wort-Timing behalten, nur verschieben, wenn die Zeile plausibel lang ist
+            shift = t - ln["start"]
+            span = ln["end"] - ln["start"]
+            nxt_ok = span < 12
+            if nxt_ok:
+                words = [{"t": w["t"], "s": round(w["s"] + shift, 3), "e": round(w["e"] + shift, 3)} for w in ln["words"]]
+                out.append({**ln, "start": words[0]["s"], "end": words[-1]["e"], "words": words})
+            else:
+                out.append(fb)
+            fixed += 1
+        else:
+            out.append(ln)
+    if fixed:
+        print(f"  {fixed} Zeilen mit LRC-Zeiten korrigiert")
+    # Überlappungen glätten
+    for a, b in zip(out, out[1:]):
+        if a["end"] > b["start"]:
+            a["end"] = b["start"] - 0.05
+            for w in a["words"]:
+                w["e"] = min(w["e"], a["end"])
+                w["s"] = min(w["s"], w["e"])
+    return out
+
+
 def _alignment_ok(lines: list[dict], synced: list[tuple[float, str]]) -> bool:
     if not lines:
         return False
@@ -231,6 +267,8 @@ def build_lyrics(vocals_path: str, artist: str, title: str, duration: float) -> 
             result = model.align(vocals_path, "\n".join(plain), language=language or "en",
                                  original_split=True)
             lines = _result_to_lines(result)
+            if synced:
+                lines = _fix_with_lrc(lines, synced, duration)
             if _alignment_ok(lines, synced):
                 return {"source": "lrclib+align", "language": language,
                         "lrclib_id": hit.get("id"), "lines": _split_long(lines, 14)}
