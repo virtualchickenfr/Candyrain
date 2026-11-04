@@ -1,5 +1,5 @@
-name: PC-Version bereitstellen
-run-name: "📦 PC-Version zum Herunterladen"
+name: Windows-App bauen
+run-name: "🪟 Karaoke Studio.exe bauen und testen"
 
 on:
   push:
@@ -8,52 +8,117 @@ on:
       - "app/**"
       - "pipeline/**"
       - "desktop/**"
-      - "Karaoke Studio starten.bat"
       - ".github/workflows/release.yml"
   workflow_dispatch:
+    inputs:
+      skip_selftest:
+        description: "Selbsttest überspringen"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: pc-release
+  group: windows-build
   cancel-in-progress: true
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: ZIP bauen
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Werkzeuge installieren
+        run: python -m pip install pyinstaller==6.11.1 pywebview==5.3.2
+
+      - name: Karaoke Studio.exe bauen
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name "Karaoke Studio"
+          --icon desktop/assets/icon.ico
+          --paths desktop
+          --add-data "app;app"
+          --add-data "pipeline;pipeline"
+          --hidden-import server --hidden-import setup_tools --hidden-import paths
+          --collect-all webview --collect-all clr_loader --collect-all pythonnet
+          desktop/main.py
+
+      - name: Größe prüfen
+        shell: pwsh
+        run: Get-Item "dist/Karaoke Studio.exe" | Select-Object Name, @{n="MB";e={[math]::Round($_.Length/1MB,1)}}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: karaoke-studio-exe
+          path: dist/Karaoke Studio.exe
+
+  selftest:
+    needs: build
+    if: ${{ !inputs.skip_selftest }}
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: karaoke-studio-exe
+
+      - name: Selbsttest (Einrichtung + echter Song-Durchlauf)
+        shell: pwsh
+        env:
+          KARAOKE_DATA: ${{ runner.temp }}\ks-daten
+          KARAOKE_TOOLS: ${{ runner.temp }}\ks-tools
         run: |
-          mkdir -p dist
-          git archive --format=zip --prefix="Karaoke Studio/" -o dist/Karaoke-Studio.zip HEAD \
-            app pipeline desktop "Karaoke Studio starten.bat" README.md
-          ls -la dist
+          $log = Join-Path $env:RUNNER_TEMP "selbsttest.log"
+          $p = Start-Process -FilePath ".\Karaoke Studio.exe" -ArgumentList "--selftest", "`"$log`"" -Wait -PassThru
+          Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 150
+          Write-Host "Exit-Code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Protokoll sichern
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selbsttest-log
+          path: ${{ runner.temp }}\selbsttest.log
+
+  release:
+    needs: [build, selftest]
+    if: ${{ always() && needs.build.result == 'success' && (needs.selftest.result == 'success' || needs.selftest.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: karaoke-studio-exe
 
       - name: Als Download veröffentlichen
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          mv "Karaoke Studio.exe" Karaoke-Studio.exe
           NOTES=$(cat <<'EOF'
-          ## Karaoke Studio für Windows
+          ## 🎤 Karaoke Studio für Windows
 
-          1. **Karaoke-Studio.zip** herunterladen (unten bei „Assets“).
-          2. Rechtsklick → **Alle extrahieren**.
-          3. Im Ordner **„Karaoke Studio starten“** doppelklicken.
-             Falls Windows warnt: *Weitere Informationen* → *Trotzdem ausführen*.
-          4. Beim ersten Start richtet sich die App selbst ein (10–20 Minuten).
-             Danach öffnet sie sich im Browser.
+          1. **Karaoke-Studio.exe** herunterladen (unten bei „Assets“).
+          2. Doppelklicken. Falls Windows warnt („Der Computer wurde durch Windows geschützt“):
+             *Weitere Informationen* → *Trotzdem ausführen*.
+          3. Beim ersten Start auf **„Einrichtung starten“** klicken – die App lädt die KI einmalig
+             (mit Grafikkarte ca. 5 GB, sonst ca. 1,5 GB).
 
           Mit NVIDIA-Grafikkarte dauert ein Song ca. 1–3 Minuten, ohne ca. 5–15 Minuten.
-          Am Handy im selben WLAN die Adresse öffnen, die im schwarzen Fenster steht.
+          Songs und Videos liegen in *Dokumente → Karaoke Studio*.
           EOF
           )
           if gh release view pc-version >/dev/null 2>&1; then
-            gh release upload pc-version dist/Karaoke-Studio.zip --clobber
-            gh release edit pc-version --notes "$NOTES" --latest
+            gh release delete-asset pc-version Karaoke-Studio.zip -y 2>/dev/null || true
+            gh release upload pc-version Karaoke-Studio.exe --clobber
+            gh release edit pc-version --title "Karaoke Studio für Windows" --notes "$NOTES" --latest
           else
-            gh release create pc-version dist/Karaoke-Studio.zip \
-              --title "Karaoke Studio – PC-Version (Windows)" --notes "$NOTES" --latest
+            gh release create pc-version Karaoke-Studio.exe --title "Karaoke Studio für Windows" --notes "$NOTES" --latest
           fi

@@ -271,6 +271,12 @@ input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 
 .video-list li > b { flex: 1; white-space: nowrap; }
 .vid-actions { display: flex; gap: 6px; }
 .vid-actions .btn { padding: 8px 12px; font-size: .9rem; }
+.progress { height: 14px; border-radius: 999px; background: rgba(255, 242, 220, .12); overflow: hidden; margin: 8px 0 14px; }
+.progress-bar { height: 100%; width: 0; background: var(--amber); border-radius: inherit; transition: width .6s ease; }
+.inst-step { font-weight: 700; font-size: 1.1rem; margin: 0 0 4px; }
+.inst-log { white-space: pre-wrap; font-size: .8rem; color: var(--muted); max-height: 220px; overflow: auto; background: rgba(0,0,0,.25); padding: 10px; border-radius: var(--radius-sm); }
+.row-start { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.local-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .guide-steps { margin: 0; padding-left: 1.3rem; display: grid; gap: 10px; }
 .guide-steps li::marker { color: var(--amber); font-weight: 800; }
 .video-player { width: 100%; border-radius: var(--radius-sm); background: #000; max-height: 50dvh; }

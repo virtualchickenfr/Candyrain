@@ -1,8 +1,8 @@
 # 🎤 Karaoke Studio
 
-## ⬇️ [PC-Version herunterladen (Windows)](https://github.com/virtualchickenfr/Candyrain/releases/latest/download/Karaoke-Studio.zip)
+## ⬇️ [Karaoke Studio für Windows herunterladen](https://github.com/virtualchickenfr/Candyrain/releases/latest/download/Karaoke-Studio.exe)
 
-ZIP entpacken → **„Karaoke Studio starten“** doppelklicken → fertig. Kein GitHub-Konto, kein Schlüssel nötig.
+**Karaoke-Studio.exe** doppelklicken → beim ersten Start „Einrichtung starten“ → fertig. Eigenes Fenster, kein GitHub-Konto, kein Schlüssel.
 
 Familien-Karaoke: YouTube-Link oder MP3 rein, Karaoke-Song mit Lyrics raus.
 
@@ -13,15 +13,15 @@ Familien-Karaoke: YouTube-Link oder MP3 rein, Karaoke-Song mit Lyrics raus.
 
 Zwei Varianten:
 
-- **PC-Version (Windows):** `Karaoke Studio starten.bat` doppelklicken. Richtet sich beim ersten Start selbst ein, nutzt eine NVIDIA-Grafikkarte automatisch und braucht weder GitHub noch Schlüssel. Am Handy im selben WLAN über die angezeigte Adresse öffnen.
-- **Cloud-Version:** läuft kostenlos auf GitHub Actions, die App unter https://karaoke-studio-seven.vercel.app.
+- **Windows-App:** `Karaoke-Studio.exe` – eigenes Programmfenster, richtet sich beim ersten Start selbst ein, nutzt eine NVIDIA-Grafikkarte automatisch. Optional auch am Handy im selben WLAN (Einstellungen → „Am Handy nutzen“).
+- **Cloud-Version:** läuft auf GitHub Actions, die App unter https://karaoke-studio-seven.vercel.app.
 
-## PC-Version
+## Windows-App
 
-1. [Karaoke-Studio.zip herunterladen](https://github.com/virtualchickenfr/Candyrain/releases/latest/download/Karaoke-Studio.zip) und entpacken (Rechtsklick → Alle extrahieren).
-2. `Karaoke Studio starten.bat` doppelklicken. Beim ersten Mal werden Python, ffmpeg und die KI-Modelle in den Ordner `tools` geladen (10–20 Minuten).
-3. Wenn Windows fragt, ob Python im Netzwerk erreichbar sein darf: **Zulassen** (privates Netzwerk) – dann klappt es auch am Handy.
-4. Songs, Lyrics und Videos landen im Ordner `Daten`.
+- Download: siehe oben. Windows SmartScreen warnt bei neuen Programmen: *Weitere Informationen* → *Trotzdem ausführen*.
+- Die KI-Werkzeuge landen in `%LOCALAPPDATA%\KaraokeStudio\tools`, Songs und Videos in *Dokumente → Karaoke Studio*.
+- Protokoll bei Problemen: `%LOCALAPPDATA%\KaraokeStudio\log.txt`.
+- Gebaut und auf Windows getestet wird die .exe automatisch von `.github/workflows/release.yml`.
 
 ## So funktioniert es
 

@@ -348,10 +348,12 @@ $("#add-form").addEventListener("submit", async (e) => {
 // ------------------------------------------------------------------ Einstellungen
 $("#btn-settings").addEventListener("click", () => {
   $("#token-field").hidden = !!LOCAL;
+  $("#local-actions").hidden = !LOCAL || !IS_DESKTOP;
+  $("#lan-info").textContent = "";
   if (LOCAL) {
-    $("#settings-info").innerHTML = `Läuft auf deinem PC (${LOCAL.gpu ? `Grafikkarte: ${esc(LOCAL.gpu)}` : "ohne Grafikkarte"}).` +
-      (LOCAL.lan?.length ? `<br>Am Handy im selben WLAN öffnen: <b>${LOCAL.lan.map(esc).join(" oder ")}</b>` : "") +
-      `<br>Songs liegen in: ${esc(LOCAL.data)}`;
+    $("#settings-info").innerHTML = `Rechnet mit: <b>${LOCAL.gpu ? esc(LOCAL.gpu) : "Prozessor (keine Grafikkarte)"}</b>` +
+      `<br>Songs und Videos liegen in: ${esc(LOCAL.data)}`;
+    renderLan();
     $("#set-name").value = cfg.name; $("#btn-logout").hidden = true;
     return $("#dlg-settings").showModal();
   }
@@ -557,6 +559,7 @@ seekEl.addEventListener("input", () => { fillRange(seekEl); $("#t-cur").textCont
 seekEl.addEventListener("change", () => { seekEl.dragging = false; engine.seek((seekEl.value / 1000) * engine.duration); });
 
 $("#btn-fullscreen").addEventListener("click", () => {
+  if (window.pywebview?.api?.toggle_fullscreen) return window.pywebview.api.toggle_fullscreen();
   const el = $("#view-player");
   if (document.fullscreenElement) document.exitFullscreen?.();
   else (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el);
@@ -633,7 +636,7 @@ $("#btn-videos").addEventListener("click", async () => {
       return `<li><b>${m ? `${m[1]} % Gesang` : esc(f.name)}</b><span>${Math.max(1, Math.round(f.size / 1048576))} MB</span>
         <span class="vid-actions">
           <button type="button" class="btn btn-ghost" data-play="${esc(f.path)}">Ansehen</button>
-          <button type="button" class="btn btn-primary" data-save="${esc(f.path)}" data-name="${esc(f.name)}">Speichern</button>
+          <button type="button" class="btn btn-primary" data-save="${esc(f.path)}" data-name="${esc(f.name)}">${LOCAL && IS_DESKTOP ? "Im Ordner zeigen" : "Speichern"}</button>
         </span></li>`;
     }).join("") || `<li><span>Noch keine Videos.</span></li>`;
   } catch (e) {
@@ -646,7 +649,13 @@ $("#video-list").addEventListener("click", async (e) => {
   const path = b.dataset.play || b.dataset.save;
   const label = b.textContent; b.disabled = true; b.textContent = "Lädt …";
   try {
-    const url = ((!cfg.token || LOCAL) && b.dataset.play) ? rawUrl(path, VIDEO_BRANCH) : URL.createObjectURL(await videoBlob(path));
+    if (LOCAL && b.dataset.save && IS_DESKTOP) {
+      await api("/api/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: `videos/${path}` }) });
+      $("#videos-note").textContent = "Das Video wird im Ordner angezeigt.";
+      return;
+    }
+    const url = LOCAL ? rawUrl(path, VIDEO_BRANCH)
+      : ((!cfg.token && b.dataset.play) ? rawUrl(path, VIDEO_BRANCH) : URL.createObjectURL(await videoBlob(path)));
     if (b.dataset.play) {
       engine.pause(); setPlayingUI(false);
       const v = $("#video-player"); v.src = url; v.hidden = false; v.play().catch(() => {});
@@ -662,6 +671,72 @@ $("#video-list").addEventListener("click", async (e) => {
 $("#dlg-videos").addEventListener("close", () => { const v = $("#video-player"); v.pause(); });
 
 // ------------------------------------------------------------------ Start
+// ------------------------------------------------------------------ PC-App: Einrichtung & WLAN
+const IS_DESKTOP = ["127.0.0.1", "localhost"].includes(location.hostname);
+let installTimer = null;
+
+function showInstall() {
+  show("install");
+  if (!IS_DESKTOP) {
+    $("#inst-lead").textContent = "Karaoke Studio ist auf dem PC noch nicht eingerichtet. Starte die Einrichtung bitte am PC.";
+    $("#btn-install").hidden = true;
+    return;
+  }
+  renderSetup(LOCAL.setup);
+  if (LOCAL.setup?.state === "running") pollSetup();
+}
+
+function renderSetup(st) {
+  if (!st) return;
+  const pct = Math.round((st.progress || 0) * 100);
+  $("#inst-bar").style.width = `${pct}%`;
+  $(".progress").setAttribute("aria-valuenow", pct);
+  const running = st.state === "running";
+  $("#inst-step").textContent = running ? `${st.label || "Starte"} … ${pct} %` : st.state === "done" ? "Fertig eingerichtet!" : "";
+  $("#inst-detail").textContent = running ? (st.detail || "") : "";
+  $("#inst-error").textContent = st.state === "failed" ? `Die Einrichtung hat nicht geklappt: ${st.error}` : "";
+  $("#btn-install").hidden = running || st.state === "done";
+  $("#btn-install").textContent = st.state === "failed" ? "Erneut versuchen" : "Einrichtung starten";
+  $("#inst-log-box").hidden = !(st.log && (running || st.state === "failed"));
+  $("#inst-log").textContent = st.log || "";
+}
+
+async function pollSetup() {
+  clearTimeout(installTimer);
+  let st;
+  try { st = await api("/api/setup"); } catch { installTimer = setTimeout(pollSetup, 2000); return; }
+  renderSetup(st);
+  if (st.state === "running") { installTimer = setTimeout(pollSetup, 1000); return; }
+  if (st.state === "done") {
+    LOCAL = await api("/api/health");
+    setTimeout(() => { openLibrary(); toast("Alles bereit – füge deinen ersten Song hinzu 🎤", 5000); }, 1200);
+  }
+}
+
+$("#btn-install").addEventListener("click", async () => {
+  $("#btn-install").hidden = true;
+  try { renderSetup(await api("/api/setup/start", { method: "POST" })); } catch (e) { $("#inst-error").textContent = friendlyError(e); }
+  pollSetup();
+});
+
+function renderLan() {
+  const on = !!LOCAL?.lan_enabled;
+  $("#btn-lan").textContent = `Am Handy nutzen: ${on ? "an" : "aus"}`;
+  $("#lan-info").innerHTML = on && LOCAL.lan?.length
+    ? `Am Handy oder Tablet im selben WLAN im Browser öffnen: <b>${LOCAL.lan.map(esc).join(" oder ")}</b>`
+    : IS_DESKTOP ? "Schalte das ein, um Karaoke Studio auch am Handy oder Fernseher im selben WLAN zu nutzen." : "";
+}
+
+$("#btn-lan").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/lan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !LOCAL.lan_enabled }) });
+    LOCAL.lan_enabled = !LOCAL.lan_enabled; LOCAL.lan = r.lan; renderLan();
+    if (LOCAL.lan_enabled) $("#lan-info").innerHTML += "<br>Falls Windows nachfragt: „Zugriff zulassen“ wählen.";
+  } catch (e) { toast(friendlyError(e), 5000); }
+});
+
+$("#btn-open-data").addEventListener("click", () => api("/api/open-data", { method: "POST" }).catch(() => {}));
+
 function showGuide(title, steps) {
   $("#guide-title").textContent = title;
   $("#guide-steps").innerHTML = steps.map((t) => `<li>${esc(t)}</li>`).join("");
@@ -683,6 +758,10 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catc
       if (h.ok) { const j = await h.json(); if (j.local) LOCAL = j; }
     } catch {}
   }
-  if (LOCAL) { songs = []; $(".brand-small").textContent = "Karaoke Studio · PC"; }
+  if (LOCAL) {
+    songs = [];
+    $(".brand-small").textContent = "Karaoke Studio";
+    if (!LOCAL.ready) return showInstall();
+  }
   openLibrary();
 })();

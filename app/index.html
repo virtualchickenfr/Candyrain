@@ -52,6 +52,25 @@
   </div>
 </section>
 
+<!-- Einrichtung der PC-App -->
+<section id="view-install" class="view" hidden>
+  <div class="setup">
+    <h1 class="brand">Karaoke<br>Studio</h1>
+    <p class="lead" id="inst-lead">Einmalige Einrichtung: Karaoke Studio lädt jetzt die KI für Gesangstrennung und Lyrics. Mit Grafikkarte sind das ca. 5 GB, sonst ca. 1,5 GB – je nach Internet 10–30 Minuten.</p>
+    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar" id="inst-bar"></div></div>
+    <p class="inst-step" id="inst-step"></p>
+    <p class="hint" id="inst-detail"></p>
+    <p class="error" id="inst-error" role="alert"></p>
+    <div class="row-start">
+      <button class="btn btn-primary" id="btn-install">Einrichtung starten</button>
+    </div>
+    <details class="help" id="inst-log-box" hidden>
+      <summary>Protokoll anzeigen</summary>
+      <pre class="inst-log" id="inst-log"></pre>
+    </details>
+  </div>
+</section>
+
 <!-- Bibliothek -->
 <section id="view-library" class="view" hidden>
   <header class="topbar">
@@ -186,6 +205,11 @@
   <form method="dialog" class="stack">
     <h2>Einstellungen</h2>
     <p id="settings-info" class="hint"></p>
+    <div class="local-actions" id="local-actions" hidden>
+      <button class="btn btn-ghost" type="button" id="btn-open-data">Song-Ordner öffnen</button>
+      <button class="btn btn-ghost" type="button" id="btn-lan">Am Handy nutzen: aus</button>
+    </div>
+    <p class="hint" id="lan-info"></p>
     <label class="field"><span>Dein Name</span><input id="set-name" type="text"></label>
     <label class="field" id="token-field"><span>GitHub-Schlüssel <i>optional – damit startest du Songs direkt in der App</i></span><input id="set-token" type="password" autocomplete="off" placeholder="github_pat_…"></label>
     <div class="row-end">

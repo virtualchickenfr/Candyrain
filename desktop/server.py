@@ -1,12 +1,11 @@
-"""Karaoke Studio – lokaler Server für Windows/Mac/Linux.
+"""Karaoke Studio – interner Server der Desktop-App.
 
-Startet die Web-App unter http://localhost:8765 (und im WLAN unter http://<PC-IP>:8765)
-und verarbeitet Songs direkt auf diesem Rechner – mit NVIDIA-Grafikkarte, falls vorhanden.
-Nur Python-Standardbibliothek + die Pipeline-Pakete, kein Web-Framework nötig.
+Liefert die Oberfläche an das App-Fenster und erledigt die Arbeit im Hintergrund.
+Die KI-Verarbeitung läuft als unsichtbarer Unterprozess mit der eingerichteten Python-Kopie
+(dadurch bleibt die .exe klein). Optional auch im WLAN für Handy/Tablet erreichbar.
 """
 from __future__ import annotations
 
-import io
 import json
 import mimetypes
 import os
@@ -14,63 +13,49 @@ import queue
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
 import traceback
 import urllib.parse
 import uuid
-import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
-APP_DIR = ROOT / "app"
-DATA = Path(os.environ.get("KARAOKE_DATA", ROOT / "Daten")).resolve()
-PORT = int(os.environ.get("KARAOKE_PORT", "8765"))
-
-sys.path.insert(0, str(ROOT / "pipeline"))
-
-for d in ("songs", "videos", "inbox"):
-    (DATA / d).mkdir(parents=True, exist_ok=True)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import setup_tools as tools  # noqa: E402
+from paths import APP_DIR, DATA, IS_WIN, NO_WINDOW, PIPELINE_DIR, SETTINGS_FILE  # noqa: E402
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 mimetypes.add_type("audio/mpeg", ".mp3")
 mimetypes.add_type("video/mp4", ".mp4")
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 SAFE_ID = re.compile(r"^[a-z0-9-]+$")
+LAN_PORTS = range(8765, 8775)
 
 
-# ------------------------------------------------------------------ Geräte-Info
-
-def gpu_info() -> dict:
+def log(*args):
     try:
-        import torch
-        if torch.cuda.is_available():
-            return {"device": "cuda", "gpu": torch.cuda.get_device_name(0)}
+        print(f"[{time.strftime('%H:%M:%S')}]", *args, flush=True)
     except Exception:
         pass
-    return {"device": "cpu", "gpu": None}
 
 
-def lan_urls() -> list[str]:
-    ips = set()
+# ------------------------------------------------------------------ Einstellungen
+
+def load_settings() -> dict:
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ips.add(s.getsockname()[0])
-        s.close()
-    except OSError:
-        pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
-            if not ip.startswith("127."):
-                ips.add(ip)
-    except OSError:
-        pass
-    return [f"http://{ip}:{PORT}" for ip in sorted(ips)]
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_settings(**kw):
+    s = load_settings() | kw
+    SETTINGS_FILE.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
 
 
 # ------------------------------------------------------------------ Aufträge
@@ -88,12 +73,13 @@ class Job:
         self.started = None
         self.finished = None
         self.result = None
-        self.log = io.StringIO()
+        self.lines: list[str] = []
+        self.proc: subprocess.Popen | None = None
 
     def as_dict(self) -> dict:
-        tail = self.log.getvalue()[-1500:]
         return {k: getattr(self, k) for k in ("id", "kind", "label", "state", "stage", "error",
-                                              "created", "started", "finished", "result")} | {"log": tail}
+                                              "created", "started", "finished", "result")} | \
+               {"log": "\n".join(self.lines[-25:])}
 
 
 jobs: list[Job] = []
@@ -101,67 +87,87 @@ job_queue: "queue.Queue[Job]" = queue.Queue()
 jobs_lock = threading.Lock()
 
 
-class Tee(io.TextIOBase):
-    """Schreibt Ausgaben gleichzeitig ins Konsolenfenster und ins Job-Log."""
-    def __init__(self, *streams):
-        self.streams = streams
+def _friendly(lines: list[str]) -> str:
+    text = "\n".join(lines)
+    if "Sign in to confirm" in text or "not a bot" in text:
+        return "YouTube hat den Download blockiert. Versuche es später noch einmal oder lade eine MP3 hoch."
+    if "Video unavailable" in text or "Private video" in text:
+        return "Dieses YouTube-Video ist nicht verfügbar."
+    if "CUDA out of memory" in text or "OutOfMemoryError" in text:
+        return "Der Grafikkarte ist der Speicher ausgegangen. Schließe Spiele/andere Programme und versuche es erneut."
+    for line in reversed(lines):
+        line = line.strip()
+        if line.startswith(("ERROR", "RuntimeError", "FileNotFoundError", "ValueError")) or "Error:" in line:
+            return line[:300]
+    return "Unbekannter Fehler – Details stehen im Protokoll."
 
-    def write(self, s):
-        for st in self.streams:
-            try:
-                st.write(s)
-            except Exception:
-                pass
-        return len(s)
 
-    def flush(self):
-        for st in self.streams:
-            try:
-                st.flush()
-            except Exception:
-                pass
+def _run_pipeline(job: Job, args: list[str]):
+    env = tools.tool_env()
+    cmd = [tools.python_exe(), "-u", *args]
+    log("Starte:", " ".join(cmd[:4]), "…")
+    job.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace", env=env, cwd=str(DATA),
+                                creationflags=NO_WINDOW)
+    for raw in job.proc.stdout:
+        for line in raw.replace("\r", "\n").splitlines():
+            if line.startswith("@@STAGE "):
+                job.stage = line[8:].strip()
+            elif line.startswith("@@RESULT "):
+                try:
+                    job.result = json.loads(line[9:])
+                except json.JSONDecodeError:
+                    pass
+            elif line.strip():
+                job.lines.append(line[:400])
+                del job.lines[:-400]
+                log(line[:200])
+    if job.proc.wait() != 0:
+        raise RuntimeError(_friendly(job.lines))
+
+
+def execute(job: Job):
+    """Führt einen Auftrag aus (auch direkt vom Selbsttest aufgerufen)."""
+    job.state, job.started = "running", time.time()
+    try:
+        if not tools.is_ready():
+            raise RuntimeError("Karaoke Studio ist noch nicht eingerichtet.")
+        if job.kind == "song":
+            p = job.params
+            args = [str(PIPELINE_DIR / "process.py"), "--data-dir", str(DATA),
+                    "--artist", p.get("artist", ""), "--title", p.get("title", ""),
+                    "--added-by", p.get("added_by", "")]
+            args += ["--url", p["url"]] if p.get("url") else ["--file", p["file"]]
+            _run_pipeline(job, args)
+            if p.get("file"):
+                try:
+                    Path(p["file"]).unlink()
+                except OSError:
+                    pass
+        else:
+            sid, vol = job.params["song_id"], int(job.params["vocals"])
+            job.stage = "Video"
+            out = DATA / "videos" / sid / f"{sid}-gesang-{vol}.mp4"
+            _run_pipeline(job, [str(PIPELINE_DIR / "render.py"), str(DATA / "songs" / sid),
+                                "--vocals", str(vol), "--out", str(out)])
+            if not out.exists():
+                raise RuntimeError("Das Video wurde nicht erstellt.")
+            job.result = {"song_id": sid, "video": out.name}
+        job.state = "done"
+    except Exception as e:
+        log(traceback.format_exc())
+        job.state = "failed"
+        job.error = str(e)[:400]
+    finally:
+        job.finished = time.time()
+        job.proc = None
 
 
 def worker():
-    import process as pipeline   # schwere Imports erst hier
-    import render as renderer
-    real_out = sys.__stdout__
     while True:
         job = job_queue.get()
-        job.state, job.started = "running", time.time()
-        old = sys.stdout, sys.stderr
-        sys.stdout = sys.stderr = Tee(real_out, job.log)
-        try:
-            if job.kind == "song":
-                p = job.params
-                meta = pipeline.process_song(
-                    url=p.get("url", ""), file=p.get("file", ""), artist=p.get("artist", ""),
-                    title=p.get("title", ""), added_by=p.get("added_by", ""), data_dir=DATA,
-                    stage=lambda name: setattr(job, "stage", name))
-                job.result = {"song_id": meta["id"], "title": meta["title"], "artist": meta["artist"]}
-                if p.get("file"):
-                    try:
-                        (DATA / p["file"]).unlink()
-                    except OSError:
-                        pass
-            else:
-                sid, vol = job.params["song_id"], int(job.params["vocals"])
-                job.stage = "Video"
-                out = DATA / "videos" / sid / f"{sid}-gesang-{vol}.mp4"
-                renderer.render(DATA / "songs" / sid, vol, out)
-                job.result = {"song_id": sid, "video": out.name}
-            job.state = "done"
-        except Exception as e:
-            traceback.print_exc()
-            job.state = "failed"
-            msg = str(e)
-            if "Sign in to confirm" in job.log.getvalue() or "not a bot" in job.log.getvalue():
-                msg = "YouTube hat den Download blockiert. Versuche es später noch einmal oder lade eine MP3 hoch."
-            job.error = msg[:400]
-        finally:
-            sys.stdout, sys.stderr = old
-            job.finished = time.time()
-            job_queue.task_done()
+        execute(job)
+        job_queue.task_done()
 
 
 def add_job(kind: str, label: str, params: dict) -> Job:
@@ -173,6 +179,69 @@ def add_job(kind: str, label: str, params: dict) -> Job:
     return job
 
 
+def stop_all():
+    for j in list(jobs):
+        if j.proc and j.proc.poll() is None:
+            try:
+                if IS_WIN:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(j.proc.pid)],
+                                   capture_output=True, creationflags=NO_WINDOW)
+                else:
+                    j.proc.kill()
+            except Exception:
+                pass
+
+
+# ------------------------------------------------------------------ WLAN
+
+lan_server: ThreadingHTTPServer | None = None
+
+
+def lan_ips() -> list[str]:
+    ips = set()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ips.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            if not info[4][0].startswith("127."):
+                ips.add(info[4][0])
+    except OSError:
+        pass
+    return sorted(ips)
+
+
+def lan_urls() -> list[str]:
+    if not lan_server:
+        return []
+    port = lan_server.server_address[1]
+    return [f"http://{ip}:{port}" for ip in lan_ips()]
+
+
+def set_lan(enabled: bool) -> list[str]:
+    global lan_server
+    if enabled and not lan_server:
+        for port in LAN_PORTS:
+            try:
+                lan_server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+                break
+            except OSError:
+                continue
+        if lan_server:
+            threading.Thread(target=lan_server.serve_forever, daemon=True).start()
+            log("WLAN-Zugriff an:", lan_urls())
+    elif not enabled and lan_server:
+        srv, lan_server = lan_server, None
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+        log("WLAN-Zugriff aus")
+    save_settings(lan=bool(enabled))
+    return lan_urls()
+
+
 # ------------------------------------------------------------------ HTTP
 
 def read_meta(song_dir: Path) -> dict | None:
@@ -182,14 +251,23 @@ def read_meta(song_dir: Path) -> dict | None:
         return None
 
 
+def health() -> dict:
+    d = tools.info() or {}
+    return {"ok": True, "local": True, "ready": tools.is_ready(), "device": d.get("device", "cpu"),
+            "gpu": d.get("gpu"), "lan": lan_urls(), "lan_enabled": bool(lan_server), "data": str(DATA),
+            "setup": tools.status.as_dict()}
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "KaraokeStudio/1.0"
+    server_version = "KaraokeStudio/2.0"
 
-    def log_message(self, fmt, *args):  # Konsole ruhig halten
-        if self.path.startswith("/api/") and not self.path.startswith("/api/jobs"):
-            sys.__stdout__.write(f"[{time.strftime('%H:%M:%S')}] {self.command} {self.path}\n")
+    def log_message(self, fmt, *args):
+        pass
 
-    # --- Hilfen
+    @property
+    def is_local(self) -> bool:
+        return self.client_address[0] in ("127.0.0.1", "::1")
+
     def send_json(self, obj, status=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -206,20 +284,19 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
-    def send_file(self, path: Path, cache: str = "no-cache"):
-        if not path.is_file():
+    def send_file(self, path: Path | None):
+        if not path or not path.is_file():
             return self.send_json({"error": "nicht gefunden"}, 404)
         size = path.stat().st_size
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         start, end = 0, size - 1
-        rng = self.headers.get("Range")
-        m = re.match(r"bytes=(\d*)-(\d*)", rng or "")
-        if m and size:
+        m = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range") or "")
+        if m and size and (m.group(1) or m.group(2)):
             if m.group(1):
                 start = int(m.group(1))
                 if m.group(2):
                     end = min(int(m.group(2)), size - 1)
-            elif m.group(2):
+            else:
                 start = max(0, size - int(m.group(2)))
             self.send_response(206)
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
@@ -228,7 +305,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
-        self.send_header("Cache-Control", cache)
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         if self.command == "HEAD":
             return
@@ -245,28 +322,22 @@ class Handler(BaseHTTPRequestHandler):
             except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
                 pass
 
-    def safe_path(self, base: Path, rel: str) -> Path | None:
+    @staticmethod
+    def safe_path(base: Path, rel: str) -> Path | None:
         p = (base / urllib.parse.unquote(rel)).resolve()
         return p if p.is_relative_to(base.resolve()) else None
 
-    # --- Routen
     def do_HEAD(self):
         self.do_GET()
 
     def do_GET(self):
-        url = urllib.parse.urlparse(self.path)
-        path = url.path
-
+        path = urllib.parse.urlparse(self.path).path
         if path == "/api/health":
-            return self.send_json({"ok": True, "local": True, **gpu_info(), "lan": lan_urls(),
-                                   "data": str(DATA)})
+            return self.send_json(health())
+        if path == "/api/setup":
+            return self.send_json(tools.status.as_dict())
         if path == "/api/songs":
-            out = []
-            for d in (DATA / "songs").iterdir():
-                if d.is_dir():
-                    meta = read_meta(d)
-                    if meta:
-                        out.append(meta)
+            out = [m for d in (DATA / "songs").iterdir() if d.is_dir() and (m := read_meta(d))]
             out.sort(key=lambda m: m.get("added", ""), reverse=True)
             return self.send_json(out)
         if path == "/api/jobs":
@@ -276,23 +347,40 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             vdir = DATA / "videos" / m.group(1)
             files = sorted(vdir.glob("*.mp4")) if vdir.is_dir() else []
-            return self.send_json([{"name": f.name, "size": f.stat().st_size,
-                                    "path": f"{m.group(1)}/{f.name}", "type": "file"} for f in files])
+            return self.send_json([{"name": f.name, "size": f.stat().st_size, "type": "file",
+                                    "path": f"{m.group(1)}/{f.name}"} for f in files])
         if path.startswith("/files/"):
-            p = self.safe_path(DATA, path[len("/files/"):])
-            return self.send_file(p) if p else self.send_json({"error": "verboten"}, 403)
-
-        # App-Dateien
+            return self.send_file(self.safe_path(DATA, path[len("/files/"):]))
         rel = path.lstrip("/") or "index.html"
         p = self.safe_path(APP_DIR, rel)
         if p and p.is_dir():
             p = p / "index.html"
-        return self.send_file(p) if p else self.send_json({"error": "verboten"}, 403)
+        return self.send_file(p)
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        b = self.read_json()
+
+        # Nur am PC selbst erlaubt
+        if path in ("/api/setup/start", "/api/lan", "/api/reveal", "/api/open-data"):
+            if not self.is_local:
+                return self.send_json({"error": "Nur am PC möglich."}, 403)
+            if path == "/api/setup/start":
+                return self.send_json(tools.start())
+            if path == "/api/lan":
+                return self.send_json({"lan": set_lan(bool(b.get("enabled")))})
+            if path == "/api/open-data":
+                _reveal(DATA, select=False)
+                return self.send_json({"ok": True})
+            p = self.safe_path(DATA, str(b.get("path", "")))
+            if not p or not p.exists():
+                return self.send_json({"error": "Datei nicht gefunden."}, 404)
+            _reveal(p, select=True)
+            return self.send_json({"ok": True})
+
         if path == "/api/songs":
-            b = self.read_json()
+            if not tools.is_ready():
+                return self.send_json({"error": "Bitte Karaoke Studio zuerst am PC einrichten."}, 409)
             url = (b.get("url") or "").strip()
             if not re.match(r"^https?://(www\.|m\.|music\.)?(youtube\.com|youtu\.be)/", url):
                 return self.send_json({"error": "Bitte einen YouTube-Link angeben."}, 400)
@@ -301,7 +389,6 @@ class Handler(BaseHTTPRequestHandler):
                 "added_by": b.get("added_by", "")})
             return self.send_json(job.as_dict(), 202)
         if path == "/api/export":
-            b = self.read_json()
             sid = str(b.get("song_id", ""))
             try:
                 vol = max(0, min(100, int(b.get("vocals", 0))))
@@ -315,7 +402,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/songs/([a-z0-9-]+)/delete$", path)
         if m:
             sid = m.group(1)
-            trash = DATA / "papierkorb"
+            trash = DATA / "Papierkorb"
             trash.mkdir(exist_ok=True)
             for sub in ("songs", "videos"):
                 src = DATA / sub / sid
@@ -328,13 +415,15 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         if url.path != "/api/upload":
             return self.send_json({"error": "unbekannt"}, 404)
+        if not tools.is_ready():
+            return self.send_json({"error": "Bitte Karaoke Studio zuerst am PC einrichten."}, 409)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         name = re.sub(r"[^\w.\- ]+", "_", q.get("name", "song.mp3"))[-80:] or "song.mp3"
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0 or n > 500 * 1024 * 1024:
             return self.send_json({"error": "Datei leer oder zu groß (max. 500 MB)."}, 400)
-        rel = f"inbox/{uuid.uuid4().hex[:6]}-{name}"
-        with open(DATA / rel, "wb") as f:
+        dest = DATA / "inbox" / f"{uuid.uuid4().hex[:6]}-{name}"
+        with open(dest, "wb") as f:
             left = n
             while left > 0:
                 chunk = self.rfile.read(min(1024 * 1024, left))
@@ -342,32 +431,48 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 f.write(chunk)
                 left -= len(chunk)
-        title = q.get("title") or Path(name).stem
-        job = add_job("song", title, {"file": rel, "artist": q.get("artist", ""), "title": q.get("title", ""),
-                                      "added_by": q.get("added_by", "")})
+        job = add_job("song", q.get("title") or Path(name).stem, {
+            "file": str(dest), "artist": q.get("artist", ""), "title": q.get("title", ""),
+            "added_by": q.get("added_by", "")})
         return self.send_json(job.as_dict(), 202)
 
 
-def main():
-    info = gpu_info()
-    print("=" * 60)
-    print("  Karaoke Studio läuft!")
-    print(f"  Am PC:    http://localhost:{PORT}")
-    for u in lan_urls():
-        print(f"  Im WLAN:  {u}   (Handy, Tablet, Fernseher)")
-    print(f"  Rechnet mit: {'Grafikkarte – ' + info['gpu'] if info['gpu'] else 'Prozessor (keine NVIDIA-Grafikkarte gefunden)'}")
-    print(f"  Songs liegen in: {DATA}")
-    print("  Zum Beenden dieses Fenster schließen.")
-    print("=" * 60)
-    threading.Thread(target=worker, daemon=True).start()
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    if os.environ.get("KARAOKE_NO_BROWSER") != "1":
-        threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()
+def _reveal(p: Path, select: bool):
     try:
-        server.serve_forever()
+        if IS_WIN:
+            if select:
+                subprocess.Popen(["explorer", "/select,", str(p)])
+            else:
+                os.startfile(str(p))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(p.parent if select else p)])
+    except Exception as e:
+        log("Ordner öffnen fehlgeschlagen:", e)
+
+
+# ------------------------------------------------------------------ Start
+
+internal_server: ThreadingHTTPServer | None = None
+
+
+def start(port: int = 0) -> int:
+    """Startet Server + Arbeits-Thread. Gibt den internen Port zurück (nur 127.0.0.1)."""
+    global internal_server
+    internal_server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=internal_server.serve_forever, daemon=True).start()
+    threading.Thread(target=worker, daemon=True).start()
+    if load_settings().get("lan"):
+        set_lan(True)
+    port = internal_server.server_address[1]
+    log(f"Interner Server auf Port {port}, Daten in {DATA}")
+    return port
+
+
+if __name__ == "__main__":   # Entwicklung: python desktop/server.py
+    p = start(int(os.environ.get("KARAOKE_PORT", "8765")))
+    print(f"http://127.0.0.1:{p}")
+    try:
+        while True:
+            time.sleep(3600)
     except KeyboardInterrupt:
-        pass
-
-
-if __name__ == "__main__":
-    main()
+        stop_all()

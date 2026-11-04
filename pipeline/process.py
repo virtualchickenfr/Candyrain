@@ -223,12 +223,17 @@ def main():
     ap.add_argument("--artist", default="")
     ap.add_argument("--title", default="")
     ap.add_argument("--added-by", default="")
+    ap.add_argument("--data-dir", default="")
     ap.add_argument("--video", default="")
     ap.add_argument("--vocals", type=int, default=0, help="Gesangslautstärke im Standard-Video")
     a = ap.parse_args()
 
     meta = process_song(url=a.url or "", file=a.file or "", artist=a.artist, title=a.title,
-                        added_by=a.added_by, video=Path(a.video) if a.video else None, vocals=a.vocals)
+                        added_by=a.added_by, data_dir=Path(a.data_dir) if a.data_dir else None,
+                        video=Path(a.video) if a.video else None, vocals=a.vocals,
+                        stage=lambda name: print(f"@@STAGE {name}", flush=True))
+    print("@@RESULT " + json.dumps({"song_id": meta["id"], "title": meta["title"], "artist": meta["artist"]},
+                                   ensure_ascii=False), flush=True)
 
     gh_out = os.environ.get("GITHUB_OUTPUT")
     if gh_out:
