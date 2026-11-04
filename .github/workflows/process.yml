@@ -51,7 +51,14 @@ jobs:
           deno-version: v2.x
 
       - name: ffmpeg installieren
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+        timeout-minutes: 12
+        run: |
+          for i in 1 2 3; do
+            sudo timeout 180 apt-get update -qq -o Acquire::Retries=3 && \
+            sudo timeout 240 apt-get install -y -qq --no-install-recommends -o Acquire::Retries=3 ffmpeg && exit 0
+            echo "Versuch $i fehlgeschlagen, neuer Versuch …"; sleep 10
+          done
+          exit 1
 
       - name: KI-Modelle aus dem Cache holen
         uses: actions/cache@v4
