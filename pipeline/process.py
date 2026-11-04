@@ -69,6 +69,7 @@ def fetch_youtube(url: str) -> tuple[Path, dict]:
     opts = {
         "format": "bestaudio/best",
         "outtmpl": str(WORK / "source.%(ext)s"),
+        "windowsfilenames": True,
         "noplaylist": True,
         "quiet": False,
         "no_warnings": False,
@@ -99,13 +100,119 @@ def download(url: str, dest: Path) -> bool:
         return False
 
 
-def separate(wav: Path) -> tuple[Path, Path]:
-    print("Trenne Gesang und Instrumental (Demucs) …")
-    jobs = str(max(1, (os.cpu_count() or 2)))
-    run([sys.executable, "-m", "demucs", "--two-stems=vocals", "-n", "htdemucs", "-d", "cpu",
-         "-j", jobs, "-o", str(WORK / "sep"), str(wav)])
-    base = WORK / "sep" / "htdemucs" / wav.stem
+def device() -> str:
+    """'cuda' wenn eine NVIDIA-Grafikkarte nutzbar ist, sonst 'cpu' (überschreibbar mit KARAOKE_DEVICE)."""
+    forced = os.environ.get("KARAOKE_DEVICE")
+    if forced:
+        return forced
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+def separate(wav: Path, work: Path) -> tuple[Path, Path]:
+    dev = device()
+    print(f"Trenne Gesang und Instrumental (Demucs, {dev.upper()}) …")
+    cmd = [sys.executable, "-m", "demucs", "--two-stems=vocals", "-n", "htdemucs", "-d", dev,
+           "-o", str(work / "sep"), str(wav)]
+    if dev == "cpu":
+        cmd[8:8] = ["-j", str(max(1, (os.cpu_count() or 2)))]
+    run(cmd)
+    base = work / "sep" / "htdemucs" / wav.stem
     return base / "vocals.wav", base / "no_vocals.wav"
+
+
+def process_song(url: str = "", file: str = "", artist: str = "", title: str = "", added_by: str = "",
+                 data_dir: Path | None = None, video: Path | None = None, vocals: int = 0,
+                 stage=lambda name: None) -> dict:
+    """Verarbeitet einen Song komplett. Gibt die meta.json-Daten zurück (inkl. 'video')."""
+    data_dir = Path(data_dir) if data_dir else ROOT
+    work = data_dir / "work"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    global WORK
+    WORK = work
+
+    # 1) Audio holen -------------------------------------------------------
+    stage("Lade Audio")
+    cover_url = None
+    if url:
+        print(f"Lade Audio von YouTube: {url}")
+        src_path, info = fetch_youtube(url)
+        g_artist, g_title = guess_artist_title(info)
+        cover_url = info.get("thumbnail")
+        source = {"type": "youtube", "url": url, "youtube_title": info.get("title")}
+    else:
+        src_path = Path(file) if Path(file).is_absolute() else data_dir / file
+        tags = ffprobe_tags(src_path)
+        g_artist, g_title = tags.get("artist", ""), tags.get("title", "")
+        if not g_title:
+            g_artist, g_title = guess_artist_title({"title": Path(file).stem.replace("_", " ")})
+        source = {"type": "upload", "file": Path(file).name}
+
+    artist = (artist or "").strip() or g_artist
+    title = (title or "").strip() or g_title or "Unbekannter Song"
+    print(f"Song: {artist} – {title}")
+
+    wav = work / "source.wav"
+    run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src_path),
+         "-vn", "-ac", "2", "-ar", "44100", str(wav)])
+    duration = render.probe_duration(wav)
+
+    # 2) Gesang trennen ---------------------------------------------------
+    stage("Trenne Gesang")
+    vocals_wav, inst_wav = separate(wav, work)
+
+    # 3) Lyrics -----------------------------------------------------------
+    stage("Lyrics")
+    lyrics = lyr.build_lyrics(str(vocals_wav), artist, title, duration)
+    print(f"Lyrics: {len(lyrics['lines'])} Zeilen (Quelle: {lyrics['source']})")
+
+    # 4) Speichern --------------------------------------------------------
+    stage("Speichern")
+    now = dt.datetime.now(dt.timezone.utc)
+    song_id = f"{now:%Y%m%d-%H%M%S}-{slugify(f'{artist} {title}')}"
+    out = data_dir / "songs" / song_id
+    out.mkdir(parents=True, exist_ok=True)
+
+    for wav_in, name in ((inst_wav, "instrumental.mp3"), (vocals_wav, "vocals.mp3")):
+        run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(wav_in),
+             "-c:a", "libmp3lame", "-b:a", "160k", str(out / name)])
+
+    has_cover = False
+    if cover_url and download(cover_url, work / "cover_src"):
+        try:
+            run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(work / "cover_src"),
+                 "-vf", "scale=640:-2", "-q:v", "4", str(out / "cover.jpg")])
+            has_cover = True
+        except subprocess.CalledProcessError:
+            pass
+
+    meta = {
+        "id": song_id,
+        "artist": artist,
+        "title": title,
+        "duration": round(duration, 2),
+        "added": now.isoformat(timespec="seconds"),
+        "added_by": added_by,
+        "source": source,
+        "lyrics_source": lyrics["source"],
+        "language": lyrics.get("language"),
+        "has_cover": has_cover,
+    }
+    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out / "lyrics.json").write_text(json.dumps(lyrics, ensure_ascii=False), encoding="utf-8")
+
+    # 5) Standard-Video ---------------------------------------------------
+    stage("Video")
+    video = Path(video) if video else data_dir / "videos" / song_id / f"{song_id}-gesang-{vocals}.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    render.render(out, vocals, video)
+    shutil.rmtree(work, ignore_errors=True)
+    print(f"Fertig: {song_id}")
+    return {**meta, "video": str(video)}
 
 
 def main():
@@ -120,87 +227,14 @@ def main():
     ap.add_argument("--vocals", type=int, default=0, help="Gesangslautstärke im Standard-Video")
     a = ap.parse_args()
 
-    shutil.rmtree(WORK, ignore_errors=True)
-    WORK.mkdir(parents=True)
-
-    # 1) Audio holen -------------------------------------------------------
-    cover_url = None
-    if a.url:
-        print(f"Lade Audio von YouTube: {a.url}")
-        src_path, info = fetch_youtube(a.url)
-        artist, title = guess_artist_title(info)
-        cover_url = info.get("thumbnail")
-        source = {"type": "youtube", "url": a.url, "youtube_title": info.get("title")}
-    else:
-        src_path = ROOT / a.file
-        tags = ffprobe_tags(src_path)
-        artist = tags.get("artist", "")
-        title = tags.get("title", "")
-        if not title:
-            artist, title = guess_artist_title({"title": Path(a.file).stem.replace("_", " ")})
-        source = {"type": "upload", "file": Path(a.file).name}
-
-    artist = a.artist.strip() or artist
-    title = a.title.strip() or title or "Unbekannter Song"
-    print(f"Song: {artist} – {title}")
-
-    wav = WORK / "source.wav"
-    run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src_path),
-         "-vn", "-ac", "2", "-ar", "44100", str(wav)])
-    duration = render.probe_duration(wav)
-
-    # 2) Gesang trennen ---------------------------------------------------
-    vocals_wav, inst_wav = separate(wav)
-
-    # 3) Lyrics -----------------------------------------------------------
-    lyrics = lyr.build_lyrics(str(vocals_wav), artist, title, duration)
-    print(f"Lyrics: {len(lyrics['lines'])} Zeilen (Quelle: {lyrics['source']})")
-
-    # 4) Speichern --------------------------------------------------------
-    now = dt.datetime.now(dt.timezone.utc)
-    song_id = f"{now:%Y%m%d-%H%M%S}-{slugify(f'{artist} {title}')}"
-    out = ROOT / "songs" / song_id
-    out.mkdir(parents=True, exist_ok=True)
-
-    for wav_in, name in ((inst_wav, "instrumental.mp3"), (vocals_wav, "vocals.mp3")):
-        run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(wav_in),
-             "-c:a", "libmp3lame", "-b:a", "160k", str(out / name)])
-
-    has_cover = False
-    if cover_url and download(cover_url, WORK / "cover_src"):
-        try:
-            run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(WORK / "cover_src"),
-                 "-vf", "scale=640:-2", "-q:v", "4", str(out / "cover.jpg")])
-            has_cover = True
-        except subprocess.CalledProcessError:
-            pass
-
-    meta = {
-        "id": song_id,
-        "artist": artist,
-        "title": title,
-        "duration": round(duration, 2),
-        "added": now.isoformat(timespec="seconds"),
-        "added_by": a.added_by,
-        "source": source,
-        "lyrics_source": lyrics["source"],
-        "language": lyrics.get("language"),
-        "has_cover": has_cover,
-    }
-    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    (out / "lyrics.json").write_text(json.dumps(lyrics, ensure_ascii=False), encoding="utf-8")
-
-    # 5) Standard-Video ---------------------------------------------------
-    video = Path(a.video) if a.video else ROOT / "out" / f"{song_id}.mp4"
-    video.parent.mkdir(parents=True, exist_ok=True)
-    render.render(out, a.vocals, video)
+    meta = process_song(url=a.url or "", file=a.file or "", artist=a.artist, title=a.title,
+                        added_by=a.added_by, video=Path(a.video) if a.video else None, vocals=a.vocals)
 
     gh_out = os.environ.get("GITHUB_OUTPUT")
     if gh_out:
         with open(gh_out, "a", encoding="utf-8") as f:
-            label = f"{artist} – {title}" if artist else title
-            f.write(f"song_id={song_id}\nvideo={video}\nlabel={' '.join(label.split())}\n")
-    print(f"Fertig: {song_id}")
+            label = f"{meta['artist']} – {meta['title']}" if meta["artist"] else meta["title"]
+            f.write(f"song_id={meta['id']}\nvideo={meta['video']}\nlabel={' '.join(label.split())}\n")
 
 
 if __name__ == "__main__":

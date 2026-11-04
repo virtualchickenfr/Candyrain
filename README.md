@@ -7,7 +7,17 @@ Familien-Karaoke: YouTube-Link oder MP3 rein, Karaoke-Song mit Lyrics raus.
 - **Player** am Handy und PC mit Regler für die Gesangslautstärke (0–100 %)
 - **Karaoke-Video** (MP4) – automatisch ohne Gesang, und per Knopfdruck mit jeder beliebigen Gesangslautstärke
 
-Alles läuft kostenlos auf GitHub Actions – ohne eigene Grafikkarte.
+Zwei Varianten:
+
+- **PC-Version (Windows):** `Karaoke Studio starten.bat` doppelklicken. Richtet sich beim ersten Start selbst ein, nutzt eine NVIDIA-Grafikkarte automatisch und braucht weder GitHub noch Schlüssel. Am Handy im selben WLAN über die angezeigte Adresse öffnen.
+- **Cloud-Version:** läuft kostenlos auf GitHub Actions, die App unter https://karaoke-studio-seven.vercel.app.
+
+## PC-Version
+
+1. Repo als ZIP herunterladen (Code → Download ZIP) und entpacken – oder mit Git klonen.
+2. `Karaoke Studio starten.bat` doppelklicken. Beim ersten Mal werden Python, ffmpeg und die KI-Modelle in den Ordner `tools` geladen (10–20 Minuten).
+3. Wenn Windows fragt, ob Python im Netzwerk erreichbar sein darf: **Zulassen** (privates Netzwerk) – dann klappt es auch am Handy.
+4. Songs, Lyrics und Videos landen im Ordner `Daten`.
 
 ## So funktioniert es
 

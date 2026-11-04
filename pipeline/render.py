@@ -7,7 +7,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 W, H = 1280, 720
@@ -124,32 +126,43 @@ def render(song_dir: Path, vocals_pct: int, out: Path) -> Path:
     inst, voc = song_dir / "instrumental.mp3", song_dir / "vocals.mp3"
     duration = meta.get("duration") or probe_duration(inst)
 
-    ass_path = out.with_suffix(".ass")
-    ass_path.write_text(build_ass(lyrics, meta, duration), encoding="utf-8")
+    out = Path(out).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # Untertitel + Schrift in einen Temp-Ordner und ffmpeg dort starten:
+    # so braucht der Filter keine (unter Windows problematischen) absoluten Pfade.
+    tmp = Path(tempfile.mkdtemp(prefix="karaoke-render-"))
+    try:
+        (tmp / "lyrics.ass").write_text(build_ass(lyrics, meta, duration), encoding="utf-8")
+        fonts = tmp / "fonts"
+        fonts.mkdir()
+        for f in FONT_DIR.glob("*.ttf"):
+            shutil.copy(f, fonts / f.name)
 
-    cover = song_dir / "cover.jpg"
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
-    if cover.exists():
-        cmd += ["-loop", "1", "-framerate", "25", "-i", str(cover)]
-        bg = (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-              f"boxblur=24:3,eq=brightness=-0.32:saturation=1.15,format=yuv420p")
-    else:
-        cmd += ["-f", "lavfi", "-i", f"gradients=s={W}x{H}:c0=0x1b1035:c1=0x3a1450:c2=0x0d2a4a:x0=0:y0=0:x1={W}:y1={H}:speed=0.004:r=25"]
-        bg = "[0:v]format=yuv420p"
-    cmd += ["-i", str(inst), "-i", str(voc)]
+        cover = song_dir / "cover.jpg"
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
+        if cover.exists():
+            cmd += ["-loop", "1", "-framerate", "25", "-i", str(cover.resolve())]
+            bg = (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+                  f"boxblur=24:3,eq=brightness=-0.32:saturation=1.15,format=yuv420p")
+        else:
+            cmd += ["-f", "lavfi", "-i", f"gradients=s={W}x{H}:c0=0x1b1035:c1=0x3a1450:c2=0x0d2a4a:x0=0:y0=0:x1={W}:y1={H}:speed=0.004:r=25"]
+            bg = "[0:v]format=yuv420p"
+        cmd += ["-i", str(inst.resolve()), "-i", str(voc.resolve())]
 
-    ass_arg = str(ass_path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
-    vol = max(0, min(100, vocals_pct)) / 100
-    filt = (f"{bg},ass='{ass_arg}':fontsdir='{FONT_DIR}'[v];"
-            f"[2:a]volume={vol:.2f}[voc];[1:a][voc]amix=inputs=2:normalize=0:duration=first,"
-            f"alimiter=limit=0.97[a]")
-    cmd += ["-filter_complex", filt, "-map", "[v]", "-map", "[a]",
-            "-t", f"{duration:.2f}", "-r", "25",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-tune", "stillimage",
-            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)]
-    print("Rendere Video …")
-    subprocess.run(cmd, check=True)
-    ass_path.unlink(missing_ok=True)
+        vol = max(0, min(100, vocals_pct)) / 100
+        filt = (f"{bg},ass=lyrics.ass:fontsdir=fonts[v];"
+                f"[2:a]volume={vol:.2f}[voc];[1:a][voc]amix=inputs=2:normalize=0:duration=first,"
+                f"alimiter=limit=0.97[a]")
+        enc = os.environ.get("KARAOKE_VIDEO_ENCODER", "libx264")
+        venc = ["-c:v", enc] + (["-preset", "veryfast", "-crf", "26", "-tune", "stillimage"] if enc == "libx264"
+                                else ["-preset", "p4", "-cq", "28"])
+        cmd += ["-filter_complex", filt, "-map", "[v]", "-map", "[a]",
+                "-t", f"{duration:.2f}", "-r", "25", *venc,
+                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)]
+        print("Rendere Video …")
+        subprocess.run(cmd, check=True, cwd=tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return out
 
 

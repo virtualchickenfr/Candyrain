@@ -43,9 +43,19 @@ async function gh(path, { method = "GET", body, accept = "application/vnd.github
   return res.json();
 }
 const repoPath = (p = "") => `/repos/${cfg.repo}${p}`;
-const rawUrl = (path, ref = branch) => `https://raw.githubusercontent.com/${cfg.repo}/${encodeURIComponent(ref)}/${encodeURI(path)}`;
+// LOCAL = App läuft vom Karaoke-Studio-Programm auf dem PC (kein GitHub nötig)
+let LOCAL = null;
+const rawUrl = (path, ref = branch) => LOCAL
+  ? (ref === VIDEO_BRANCH ? `/files/videos/${encodeURI(path)}` : `/files/${encodeURI(path)}`)
+  : `https://raw.githubusercontent.com/${cfg.repo}/${encodeURIComponent(ref)}/${encodeURI(path)}`;
+async function api(path, opts = {}) {
+  const res = await fetch(path, { cache: "no-store", ...opts });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const err = new Error(data.error || String(res.status)); err.status = res.status; err.local = true; throw err; }
+  return data;
+}
 async function rawFile(path, ref = branch) {
-  if (cfg.token) return gh(repoPath(`/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`), { accept: "application/vnd.github.raw+json", raw: true });
+  if (cfg.token && !LOCAL) return gh(repoPath(`/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`), { accept: "application/vnd.github.raw+json", raw: true });
   const res = await fetch(rawUrl(path, ref));
   if (!res.ok) { const err = new Error(String(res.status)); err.status = res.status; throw err; }
   return res;
@@ -55,6 +65,7 @@ async function copyText(t) { try { await navigator.clipboard.writeText(t); retur
 const VIDEO_BRANCH = "videos";
 
 function friendlyError(e) {
+  if (e.local) return e.message;
   if (e.status === 401) return "Der Schlüssel ist ungültig oder abgelaufen. Lösche ihn in den Einstellungen oder trage einen neuen ein.";
   if (e.status === 403 && !cfg.token) return "GitHub bremst gerade (zu viele Abrufe). In ein paar Minuten klappt es wieder.";
   if (e.status === 403) return "Der Schlüssel darf das nicht. Prüfe, ob „Actions“ und „Contents“ auf „Read and write“ stehen.";
@@ -109,6 +120,11 @@ let songs = store.get("songs", []);
 const coverCache = new Map();
 
 async function loadSongs() {
+  if (LOCAL) {
+    try { songs = await api("/api/songs"); $("#library-error").textContent = ""; }
+    catch (e) { $("#library-error").textContent = "Das Karaoke-Programm antwortet nicht. Läuft das schwarze Fenster noch?"; }
+    return renderSongs();
+  }
   try {
     let dirs = [];
     try {
@@ -160,8 +176,40 @@ let jobTimer = null;
 let lastActive = 0;
 const seenDone = new Set(store.get("seenDone", []));
 
+async function loadLocalJobs() {
+  let list = [];
+  try { list = await api("/api/jobs"); } catch { jobTimer = setTimeout(loadJobs, 5000); return; }
+  const active = list.filter((j) => j.state === "queued" || j.state === "running");
+  const failed = list.filter((j) => j.state === "failed" && !seenDone.has(j.id));
+  const finished = list.filter((j) => j.state === "done" && !seenDone.has(j.id));
+  const stageText = { "Lade Audio": "Lädt den Song", "Trenne Gesang": "Trennt Gesang und Musik", "Lyrics": "Sucht und ordnet die Lyrics", "Speichern": "Speichert", "Video": "Erstellt das Video" };
+  $("#jobs").innerHTML = [...active, ...failed].map((j) => {
+    const mins = j.started ? Math.max(0, Math.round((Date.now() / 1000 - j.started) / 60)) : 0;
+    const state = j.state === "failed" ? "failed" : j.state === "queued" ? "queued" : "running";
+    const text = state === "failed" ? `Hat nicht geklappt: ${j.error || "unbekannter Fehler"}`
+      : state === "queued" ? "Wartet, bis der vorherige Song fertig ist …"
+      : `${stageText[j.stage] || "Arbeitet"} … · seit ${mins} Min.`;
+    return `<div class="job ${state}"><span class="dot"></span>
+      <span class="job-text"><b>${j.kind === "export" ? "Video: " : ""}${esc(j.label)}</b><span>${esc(text)}</span></span>
+      ${state === "failed" ? `<button class="btn btn-ghost" data-dismiss="${esc(j.id)}">OK</button>` : ""}</div>`;
+  }).join("");
+  const seenBefore = store.get("seenInit", false);
+  if (finished.length) {
+    finished.forEach((j) => seenDone.add(j.id));
+    store.set("seenDone", [...seenDone].slice(-100));
+    if (seenBefore) {
+      if (finished.some((j) => j.kind === "song")) toast("Neuer Song ist fertig 🎤");
+      if (finished.some((j) => j.kind === "export")) toast("Dein Video ist fertig – unter „Videos“ im Player.");
+    }
+    if (finished.some((j) => j.kind === "song")) loadSongs();
+  }
+  store.set("seenInit", true);
+  jobTimer = setTimeout(loadJobs, active.length ? 3000 : 15000);
+}
+
 async function loadJobs() {
   clearTimeout(jobTimer);
+  if (LOCAL) return loadLocalJobs();
   let runs = [];
   try {
     runs = (await gh(repoPath(`/actions/runs?per_page=20`))).workflow_runs || [];
@@ -200,9 +248,9 @@ async function loadJobs() {
 }
 $("#jobs").addEventListener("click", (e) => {
   const id = e.target.dataset?.dismiss; if (!id) return;
-  seenDone.add(Number(id)); store.set("seenDone", [...seenDone].slice(-100)); loadJobs();
+  seenDone.add(LOCAL ? id : Number(id)); store.set("seenDone", [...seenDone].slice(-100)); loadJobs();
 });
-document.addEventListener("visibilitychange", () => { if (!document.hidden && cfg.token) loadJobs(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && (cfg.token || LOCAL)) loadJobs(); });
 
 // ------------------------------------------------------------------ Song hinzufügen
 let addTab = "yt";
@@ -228,6 +276,27 @@ $("#add-form").addEventListener("submit", async (e) => {
     artist: $("#add-artist").value.trim(), title: $("#add-title").value.trim(),
     added_by: cfg.name, request_id: reqId,
   };
+  if (LOCAL) {
+    try {
+      btn.disabled = true;
+      if (addTab === "yt") {
+        const url = $("#add-url").value.trim();
+        if (!/^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//.test(url)) { err.textContent = "Bitte einen YouTube-Link einfügen, z. B. https://youtu.be/…"; return; }
+        await api("/api/songs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...inputs, url }) });
+      } else {
+        const file = $("#add-file").files[0];
+        if (!file) { err.textContent = "Bitte eine Audiodatei auswählen."; return; }
+        btn.textContent = "Lade hoch …";
+        const q = new URLSearchParams({ name: file.name, artist: inputs.artist, title: inputs.title, added_by: inputs.added_by });
+        await api(`/api/upload?${q}`, { method: "PUT", body: file });
+      }
+      $("#dlg-add").close(); $("#add-form").reset();
+      toast(`Song wird erstellt – ${LOCAL.device === "cuda" ? "mit Grafikkarte ca. 1–3 Minuten" : "ca. 5–15 Minuten"}.`);
+      loadJobs();
+    } catch (ex) { err.textContent = friendlyError(ex); }
+    finally { btn.disabled = false; btn.textContent = "Song erstellen"; }
+    return;
+  }
   if (!cfg.token) {
     if (addTab !== "yt") { err.textContent = "MP3 hochladen geht nur mit GitHub-Schlüssel (Einstellungen). Lade die Datei sonst auf GitHub in den Ordner „inbox“ hoch."; return; }
     const url = $("#add-url").value.trim();
@@ -278,6 +347,14 @@ $("#add-form").addEventListener("submit", async (e) => {
 
 // ------------------------------------------------------------------ Einstellungen
 $("#btn-settings").addEventListener("click", () => {
+  $("#token-field").hidden = !!LOCAL;
+  if (LOCAL) {
+    $("#settings-info").innerHTML = `Läuft auf deinem PC (${LOCAL.gpu ? `Grafikkarte: ${esc(LOCAL.gpu)}` : "ohne Grafikkarte"}).` +
+      (LOCAL.lan?.length ? `<br>Am Handy im selben WLAN öffnen: <b>${LOCAL.lan.map(esc).join(" oder ")}</b>` : "") +
+      `<br>Songs liegen in: ${esc(LOCAL.data)}`;
+    $("#set-name").value = cfg.name; $("#btn-logout").hidden = true;
+    return $("#dlg-settings").showModal();
+  }
   $("#settings-info").textContent = cfg.token
     ? `Verbunden mit ${cfg.repo} – Songs und Videos lassen sich direkt in der App starten.`
     : `Songs kommen aus ${cfg.repo}. Ohne Schlüssel startest du neue Songs über GitHub.`;
@@ -504,6 +581,13 @@ document.addEventListener("keydown", (e) => {
 $("#btn-export").addEventListener("click", async () => {
   if (!current) return;
   const v = Number($("#vol-voice").value);
+  if (LOCAL) {
+    try {
+      await api("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_id: current.id, vocals: v }) });
+      toast(`Video mit ${v} % Gesang wird erstellt.`); loadJobs();
+    } catch (e) { toast(friendlyError(e), 6000); }
+    return;
+  }
   if (!cfg.token) {
     const copied = await copyText(current.id);
     window.open(ghPage("/actions/workflows/render.yml"), "_blank", "noopener");
@@ -541,7 +625,7 @@ $("#btn-videos").addEventListener("click", async () => {
   $("#video-player").hidden = true; $("#video-player").removeAttribute("src");
   $("#dlg-videos").showModal();
   try {
-    const files = (await gh(repoPath(`/contents/${current.id}?ref=${VIDEO_BRANCH}`)))
+    const files = (LOCAL ? await api(`/api/videos/${current.id}`) : await gh(repoPath(`/contents/${current.id}?ref=${VIDEO_BRANCH}`)))
       .filter((f) => f.type === "file" && f.name.endsWith(".mp4"))
       .sort((a, b) => a.name.localeCompare(b.name, "de", { numeric: true }));
     list.innerHTML = files.map((f) => {
@@ -562,7 +646,7 @@ $("#video-list").addEventListener("click", async (e) => {
   const path = b.dataset.play || b.dataset.save;
   const label = b.textContent; b.disabled = true; b.textContent = "Lädt …";
   try {
-    const url = (!cfg.token && b.dataset.play) ? rawUrl(path, VIDEO_BRANCH) : URL.createObjectURL(await videoBlob(path));
+    const url = ((!cfg.token || LOCAL) && b.dataset.play) ? rawUrl(path, VIDEO_BRANCH) : URL.createObjectURL(await videoBlob(path));
     if (b.dataset.play) {
       engine.pause(); setPlayingUI(false);
       const v = $("#video-player"); v.src = url; v.hidden = false; v.play().catch(() => {});
@@ -590,7 +674,15 @@ function openLibrary() {
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
-(function init() {
+(async function init() {
   $("#setup-repo").value = cfg.repo;
+  if (location.protocol.startsWith("http") && !location.hostname.endsWith("vercel.app")) {
+    try {
+      const ctl = new AbortController(); setTimeout(() => ctl.abort(), 2500);
+      const h = await fetch("/api/health", { signal: ctl.signal, cache: "no-store" });
+      if (h.ok) { const j = await h.json(); if (j.local) LOCAL = j; }
+    } catch {}
+  }
+  if (LOCAL) { songs = []; $(".brand-small").textContent = "Karaoke Studio · PC"; }
   openLibrary();
 })();

@@ -9,7 +9,19 @@ import urllib.request
 
 LRCLIB = "https://lrclib.net/api"
 USER_AGENT = "karaoke-studio/1.0 (private family project)"
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
+def _device() -> str:
+    forced = os.environ.get("KARAOKE_DEVICE")
+    if forced:
+        return forced
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+# Mit Grafikkarte reicht die Zeit für das genauere Modell "medium"
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL") or ("medium" if _device() == "cuda" else "small")
 
 _SECTION = re.compile(r"^\s*[\[(](chorus|refrain|verse|strophe|bridge|intro|outro|hook|pre-chorus|instrumental)[^\])]*[\])]\s*$", re.I)
 _LRC_TIME = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
@@ -99,7 +111,7 @@ def _load_model():
     if _model is None:
         import stable_whisper
         print(f"  Lade Whisper-Modell '{WHISPER_MODEL}' …")
-        _model = stable_whisper.load_model(WHISPER_MODEL, device="cpu")
+        _model = stable_whisper.load_model(WHISPER_MODEL, device=_device())
     return _model
 
 

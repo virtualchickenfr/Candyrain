@@ -1,5 +1,5 @@
 // Einfacher Service Worker: App-Dateien offline verfügbar, alles andere direkt aus dem Netz.
-const CACHE = "karaoke-shell-v3";
+const CACHE = "karaoke-shell-v4";
 const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-180.png"];
 
 self.addEventListener("install", (e) => {
@@ -14,6 +14,7 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/files/")) return;
   // Netzwerk zuerst, damit Updates sofort ankommen; offline aus dem Cache
   e.respondWith(
     fetch(e.request).then((res) => {
