@@ -1,0 +1,59 @@
+name: PC-Version bereitstellen
+run-name: "📦 PC-Version zum Herunterladen"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "pipeline/**"
+      - "desktop/**"
+      - "Karaoke Studio starten.bat"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pc-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ZIP bauen
+        run: |
+          mkdir -p dist
+          git archive --format=zip --prefix="Karaoke Studio/" -o dist/Karaoke-Studio.zip HEAD \
+            app pipeline desktop "Karaoke Studio starten.bat" README.md
+          ls -la dist
+
+      - name: Als Download veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES=$(cat <<'EOF'
+          ## Karaoke Studio für Windows
+
+          1. **Karaoke-Studio.zip** herunterladen (unten bei „Assets“).
+          2. Rechtsklick → **Alle extrahieren**.
+          3. Im Ordner **„Karaoke Studio starten“** doppelklicken.
+             Falls Windows warnt: *Weitere Informationen* → *Trotzdem ausführen*.
+          4. Beim ersten Start richtet sich die App selbst ein (10–20 Minuten).
+             Danach öffnet sie sich im Browser.
+
+          Mit NVIDIA-Grafikkarte dauert ein Song ca. 1–3 Minuten, ohne ca. 5–15 Minuten.
+          Am Handy im selben WLAN die Adresse öffnen, die im schwarzen Fenster steht.
+          EOF
+          )
+          if gh release view pc-version >/dev/null 2>&1; then
+            gh release upload pc-version dist/Karaoke-Studio.zip --clobber
+            gh release edit pc-version --notes "$NOTES" --latest
+          else
+            gh release create pc-version dist/Karaoke-Studio.zip \
+              --title "Karaoke Studio – PC-Version (Windows)" --notes "$NOTES" --latest
+          fi

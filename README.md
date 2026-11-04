@@ -1,5 +1,9 @@
 # 🎤 Karaoke Studio
 
+## ⬇️ [PC-Version herunterladen (Windows)](https://github.com/virtualchickenfr/Candyrain/releases/latest/download/Karaoke-Studio.zip)
+
+ZIP entpacken → **„Karaoke Studio starten“** doppelklicken → fertig. Kein GitHub-Konto, kein Schlüssel nötig.
+
 Familien-Karaoke: YouTube-Link oder MP3 rein, Karaoke-Song mit Lyrics raus.
 
 - **Gesang entfernen** mit Demucs (KI)
@@ -14,7 +18,7 @@ Zwei Varianten:
 
 ## PC-Version
 
-1. Repo als ZIP herunterladen (Code → Download ZIP) und entpacken – oder mit Git klonen.
+1. [Karaoke-Studio.zip herunterladen](https://github.com/virtualchickenfr/Candyrain/releases/latest/download/Karaoke-Studio.zip) und entpacken (Rechtsklick → Alle extrahieren).
 2. `Karaoke Studio starten.bat` doppelklicken. Beim ersten Mal werden Python, ffmpeg und die KI-Modelle in den Ordner `tools` geladen (10–20 Minuten).
 3. Wenn Windows fragt, ob Python im Netzwerk erreichbar sein darf: **Zulassen** (privates Netzwerk) – dann klappt es auch am Handy.
 4. Songs, Lyrics und Videos landen im Ordner `Daten`.
