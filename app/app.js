@@ -10,7 +10,7 @@ const store = {
   set(k, v) { try { localStorage.setItem("ks." + k, JSON.stringify(v)); } catch {} },
   del(k) { try { localStorage.removeItem("ks." + k); } catch {} },
 };
-const DEFAULT_REPO = "virtualchickenfr/candyrain";
+const DEFAULT_REPO = "virtualchickenfr/Candyrain";
 const cfg = {
   get token() { return store.get("token", ""); },
   get repo() { return store.get("repo", DEFAULT_REPO); },
