@@ -25,7 +25,7 @@ async function gh(path, { method = "GET", body, accept = "application/vnd.github
   const res = await fetch(path.startsWith("http") ? path : `${API}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${cfg.token}`,
+      ...(cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {}),
       Accept: accept,
       "X-GitHub-Api-Version": "2022-11-28",
       ...(body ? { "Content-Type": "application/json" } : {}),
@@ -43,13 +43,22 @@ async function gh(path, { method = "GET", body, accept = "application/vnd.github
   return res.json();
 }
 const repoPath = (p = "") => `/repos/${cfg.repo}${p}`;
-const rawFile = (path, ref = branch) => gh(repoPath(`/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`), { accept: "application/vnd.github.raw+json", raw: true });
+const rawUrl = (path, ref = branch) => `https://raw.githubusercontent.com/${cfg.repo}/${encodeURIComponent(ref)}/${encodeURI(path)}`;
+async function rawFile(path, ref = branch) {
+  if (cfg.token) return gh(repoPath(`/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`), { accept: "application/vnd.github.raw+json", raw: true });
+  const res = await fetch(rawUrl(path, ref));
+  if (!res.ok) { const err = new Error(String(res.status)); err.status = res.status; throw err; }
+  return res;
+}
+const ghPage = (p) => `https://github.com/${cfg.repo}${p}`;
+async function copyText(t) { try { await navigator.clipboard.writeText(t); return true; } catch { return false; } }
 const VIDEO_BRANCH = "videos";
 
 function friendlyError(e) {
   if (e.status === 401) return "Der Schlüssel ist ungültig oder abgelaufen. Trenne das Gerät in den Einstellungen und verbinde es neu.";
   if (e.status === 403) return "Der Schlüssel darf das nicht. Prüfe, ob „Actions“ und „Contents“ auf „Read and write“ stehen.";
-  if (e.status === 404) return "Repository nicht gefunden. Prüfe den Namen und ob der Schlüssel Zugriff darauf hat.";
+  if (e.status === 404) return "Nicht gefunden. Ist das Repository noch öffentlich?";
+  if (e.status === 403 && !cfg.token) return "GitHub bremst gerade (zu viele Abrufe). In ein paar Minuten klappt es wieder.";
   if (e instanceof TypeError) return "Keine Verbindung. Prüfe das Internet und versuche es noch einmal.";
   return `GitHub meldet: ${e.message}`;
 }
@@ -187,7 +196,7 @@ async function loadJobs() {
     if (finished.some((r) => /render\.yml/.test(r.path))) toast("Dein Video ist fertig – unter „Videos“ im Player.");
   }
   lastActive = active.length;
-  jobTimer = setTimeout(loadJobs, active.length ? 15000 : 60000);
+  jobTimer = setTimeout(loadJobs, cfg.token ? (active.length ? 15000 : 60000) : (active.length ? 75000 : 300000));
 }
 $("#jobs").addEventListener("click", (e) => {
   const id = e.target.dataset?.dismiss; if (!id) return;
@@ -219,6 +228,22 @@ $("#add-form").addEventListener("submit", async (e) => {
     artist: $("#add-artist").value.trim(), title: $("#add-title").value.trim(),
     added_by: cfg.name, request_id: reqId,
   };
+  if (!cfg.token) {
+    if (addTab !== "yt") { err.textContent = "MP3 hochladen geht nur mit GitHub-Schlüssel (Einstellungen). Lade die Datei sonst auf GitHub in den Ordner „inbox“ hoch."; return; }
+    const url = $("#add-url").value.trim();
+    if (!/^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//.test(url)) { err.textContent = "Bitte einen YouTube-Link einfügen, z. B. https://youtu.be/…"; return; }
+    const copied = await copyText(url);
+    window.open(ghPage("/actions/workflows/process.yml"), "_blank", "noopener");
+    $("#dlg-add").close(); $("#add-form").reset();
+    showGuide("Song auf GitHub starten", [
+      "Auf der GitHub-Seite rechts auf „Run workflow“ tippen.",
+      copied ? "Den YouTube-Link ins Feld „YouTube-Link“ einfügen (er ist schon kopiert)." : `Diesen Link ins Feld „YouTube-Link“ einfügen: ${url}`,
+      "Optional Interpret und Titel eintragen, dann den grünen Button „Run workflow“ drücken.",
+      "Nach ca. 10 Minuten taucht der Song hier in der Liste auf.",
+    ]);
+    setTimeout(loadJobs, 60000);
+    return;
+  }
   try {
     btn.disabled = true;
     if (addTab === "yt") {
@@ -253,13 +278,24 @@ $("#add-form").addEventListener("submit", async (e) => {
 
 // ------------------------------------------------------------------ Einstellungen
 $("#btn-settings").addEventListener("click", () => {
-  $("#settings-info").textContent = `Verbunden mit ${cfg.repo}.`;
+  $("#settings-info").textContent = cfg.token
+    ? `Verbunden mit ${cfg.repo} – Songs und Videos lassen sich direkt in der App starten.`
+    : `Songs kommen aus ${cfg.repo}. Ohne Schlüssel startest du neue Songs über GitHub.`;
   $("#set-name").value = cfg.name;
+  $("#set-token").value = "";
+  $("#btn-logout").hidden = !cfg.token;
   $("#dlg-settings").showModal();
 });
-$("#btn-save-settings").addEventListener("click", () => store.set("name", $("#set-name").value.trim()));
+$("#btn-save-settings").addEventListener("click", async (e) => {
+  store.set("name", $("#set-name").value.trim());
+  const tok = $("#set-token").value.trim();
+  if (!tok) return;
+  e.preventDefault();
+  try { await connect(tok, cfg.repo); $("#dlg-settings").close(); toast("Schlüssel gespeichert – jetzt geht alles direkt in der App."); loadJobs(); }
+  catch (err) { store.del("token"); $("#settings-info").textContent = friendlyError(err); }
+});
 $("#btn-logout").addEventListener("click", () => {
-  if (!confirm("Dieses Gerät trennen? Der Schlüssel wird hier gelöscht.")) return;
+  if (!confirm("Den Schlüssel von diesem Gerät löschen?")) return;
   ["token", "songs", "seenDone"].forEach(store.del);
   $("#dlg-settings").close(); location.reload();
 });
@@ -468,6 +504,17 @@ document.addEventListener("keydown", (e) => {
 $("#btn-export").addEventListener("click", async () => {
   if (!current) return;
   const v = Number($("#vol-voice").value);
+  if (!cfg.token) {
+    const copied = await copyText(current.id);
+    window.open(ghPage("/actions/workflows/render.yml"), "_blank", "noopener");
+    showGuide("Video auf GitHub erstellen", [
+      "Auf der GitHub-Seite rechts auf „Run workflow“ tippen.",
+      copied ? "Ins Feld „Song-ID“ einfügen (die ID ist schon kopiert)." : `Ins Feld „Song-ID“ eintragen: ${current.id}`,
+      `Bei „Gesangslautstärke“ ${v} eintragen und „Run workflow“ drücken.`,
+      "Nach ein paar Minuten findest du das Video hier unter „Videos“.",
+    ]);
+    return;
+  }
   const btn = $("#btn-export"); btn.disabled = true;
   try {
     await gh(repoPath(`/actions/workflows/render.yml/dispatches`), {
@@ -515,7 +562,7 @@ $("#video-list").addEventListener("click", async (e) => {
   const path = b.dataset.play || b.dataset.save;
   const label = b.textContent; b.disabled = true; b.textContent = "Lädt …";
   try {
-    const url = URL.createObjectURL(await videoBlob(path));
+    const url = (!cfg.token && b.dataset.play) ? rawUrl(path, VIDEO_BRANCH) : URL.createObjectURL(await videoBlob(path));
     if (b.dataset.play) {
       engine.pause(); setPlayingUI(false);
       const v = $("#video-player"); v.src = url; v.hidden = false; v.play().catch(() => {});
@@ -531,6 +578,12 @@ $("#video-list").addEventListener("click", async (e) => {
 $("#dlg-videos").addEventListener("close", () => { const v = $("#video-player"); v.pause(); });
 
 // ------------------------------------------------------------------ Start
+function showGuide(title, steps) {
+  $("#guide-title").textContent = title;
+  $("#guide-steps").innerHTML = steps.map((t) => `<li>${esc(t)}</li>`).join("");
+  $("#dlg-guide").showModal();
+}
+
 function openLibrary() {
   show("library"); renderSongs(); loadSongs(); loadJobs();
 }
@@ -539,5 +592,5 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catc
 
 (function init() {
   $("#setup-repo").value = cfg.repo;
-  if (cfg.token) openLibrary(); else show("setup");
+  openLibrary();
 })();
