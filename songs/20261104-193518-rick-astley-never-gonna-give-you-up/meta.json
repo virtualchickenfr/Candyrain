@@ -1,0 +1,16 @@
+{
+  "id": "20261104-193518-rick-astley-never-gonna-give-you-up",
+  "artist": "Rick Astley",
+  "title": "Never Gonna Give You Up",
+  "duration": 213.04,
+  "added": "2026-11-04T19:35:18+00:00",
+  "added_by": "Test",
+  "source": {
+    "type": "youtube",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "youtube_title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)"
+  },
+  "lyrics_source": "lrclib+align",
+  "language": "en",
+  "has_cover": true
+}
