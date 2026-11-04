@@ -51,6 +51,12 @@ def _usable(c: dict) -> bool:
 
 def find_lyrics(artist: str, title: str, duration: float) -> dict | None:
     """Sucht passende Lyrics. Gibt das beste LRCLIB-Objekt zurück oder None."""
+    test = os.environ.get("KARAOKE_TEST_LRC")
+    if test and os.path.exists(test):      # für den Selbsttest: feste Lyrics statt LRCLIB
+        lrc = open(test, encoding="utf-8").read()
+        plain = "\n".join(txt for _, txt in parse_lrc(lrc) if txt)
+        return {"id": "test", "syncedLyrics": lrc, "plainLyrics": plain,
+                "artistName": artist, "trackName": title, "duration": duration}
     candidates: dict[int, dict] = {}
 
     def add(items):
@@ -251,6 +257,31 @@ def _alignment_ok(lines: list[dict], synced: list[tuple[float, str]]) -> bool:
 
 # --------------------------------------------------------------------------- Hauptfunktion
 
+def _make_align_fn(model, language: str):
+    """Richtet einen Audio-Ausschnitt (16 kHz) an mehreren Textzeilen aus."""
+    def align(seg, texts: list[str]):
+        result = model.align(seg, "\n".join(texts), language=language, original_split=True)
+        lines = []
+        for segm in result.segments:
+            ws = [{"t": w.word.strip(), "s": float(w.start), "e": float(w.end)}
+                  for w in (segm.words or []) if w.word.strip()]
+            if ws:
+                lines.append(ws)
+        if len(lines) == len(texts):
+            return lines
+        # Segmente anders geschnitten → Wörter nach Anzahl pro Zeile neu verteilen
+        flat = [w for ln in lines for w in ln]
+        counts = [len(t.split()) for t in texts]
+        if len(flat) != sum(counts):
+            return None
+        out, i = [], 0
+        for c in counts:
+            out.append(flat[i:i + c])
+            i += c
+        return out
+    return align
+
+
 def build_lyrics(vocals_path: str, artist: str, title: str, duration: float) -> dict:
     print(f"Suche Lyrics für: {artist or '?'} – {title or '?'}")
     hit = find_lyrics(artist, title, duration)
@@ -272,6 +303,23 @@ def build_lyrics(vocals_path: str, artist: str, title: str, duration: float) -> 
         print(f"  Spracherkennung fehlgeschlagen: {e}")
         language = None
 
+    # 1) Beste Variante: synchronisierte LRC-Zeiten als Anker + Wort-Ausrichtung pro Abschnitt
+    if synced and sum(1 for _, t in synced if t) >= 3:
+        try:
+            import whisper
+            import sync
+            audio = whisper.load_audio(vocals_path)
+            model = _load_model()
+            print("  Richte Lyrics abschnittsweise an den LRC-Zeiten aus …")
+            lines, stats = sync.sync_lines(audio, synced, duration, _make_align_fn(model, language or "en"),
+                                           is_section=lambda t: bool(_SECTION.match(t)))
+            if lines:
+                return {"source": "lrclib+anchored", "language": language, "lrclib_id": hit.get("id"),
+                        "sync": stats, "lines": _split_long(lines, 14)}
+        except Exception as e:
+            print(f"  Abschnittsweise Ausrichtung fehlgeschlagen: {e}")
+
+    # 2) Nur Text: über den ganzen Song ausrichten
     if plain:
         try:
             model = _load_model()
@@ -291,6 +339,7 @@ def build_lyrics(vocals_path: str, artist: str, title: str, duration: float) -> 
             return {"source": "lrclib-lines", "language": language,
                     "lrclib_id": hit.get("id"), "lines": lines_from_lrc(synced, duration)}
 
+    # 3) Keine Lyrics gefunden: Gesang transkribieren
     print("  Keine passenden Lyrics – transkribiere den Gesang mit Whisper …")
     model = _load_model()
     result = model.transcribe(vocals_path, language=language, regroup=True, vad=False,

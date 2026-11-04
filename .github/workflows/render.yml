@@ -13,6 +13,11 @@ on:
         required: true
         default: "0"
         type: string
+      offset:
+        description: "Lyrics verschieben in Sekunden (z. B. 0.3 oder -0.2)"
+        required: false
+        default: "0"
+        type: string
       request_id:
         description: "(wird von der App gesetzt)"
         required: false
@@ -30,9 +35,11 @@ jobs:
         env:
           SONG_ID: ${{ inputs.song_id }}
           VOCALS: ${{ inputs.vocals }}
+          OFFSET: ${{ inputs.offset }}
         run: |
           [[ "$SONG_ID" =~ ^[a-z0-9-]+$ ]] || { echo "::error::Ungültige Song-ID"; exit 1; }
           [[ "$VOCALS" =~ ^[0-9]{1,3}$ ]] && [ "$VOCALS" -le 100 ] || { echo "::error::Lautstärke muss 0–100 sein"; exit 1; }
+          [[ "${OFFSET:-0}" =~ ^-?[0-9]{1,2}(\.[0-9]{1,2})?$ ]] || { echo "::error::Ungültiger Versatz"; exit 1; }
 
       - uses: actions/checkout@v4
         with:
@@ -54,9 +61,10 @@ jobs:
         env:
           SONG_ID: ${{ inputs.song_id }}
           VOCALS: ${{ inputs.vocals }}
+          OFFSET: ${{ inputs.offset }}
         run: |
           mkdir -p out
-          python3 pipeline/render.py "songs/$SONG_ID" --vocals "$VOCALS" --out "out/${SONG_ID}-gesang-${VOCALS}.mp4"
+          python3 pipeline/render.py "songs/$SONG_ID" --vocals "$VOCALS" --offset "${OFFSET:-0}" --out "out/${SONG_ID}-gesang-${VOCALS}.mp4"
 
       - name: Video veröffentlichen
         env:

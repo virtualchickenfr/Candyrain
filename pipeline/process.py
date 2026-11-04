@@ -202,8 +202,19 @@ def process_song(url: str = "", file: str = "", artist: str = "", title: str = "
         "language": lyrics.get("language"),
         "has_cover": has_cover,
     }
-    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "lyrics.json").write_text(json.dumps(lyrics, ensure_ascii=False), encoding="utf-8")
+
+    # SingStar-Noten aus der Gesangsspur
+    stage("Noten")
+    try:
+        import notes as notes_mod
+        nd = notes_mod.compute(vocals_wav)
+        (out / "notes.json").write_text(json.dumps(nd, separators=(",", ":")), encoding="utf-8")
+        meta["has_notes"] = True
+        print(f"Noten: {len(nd['notes'])}")
+    except Exception as e:
+        print(f"Noten konnten nicht berechnet werden: {e}")
+    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 5) Standard-Video ---------------------------------------------------
     stage("Video")

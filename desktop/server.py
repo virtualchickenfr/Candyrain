@@ -144,12 +144,18 @@ def execute(job: Job):
                     Path(p["file"]).unlink()
                 except OSError:
                     pass
+        elif job.kind in ("resync", "notes"):
+            sid = job.params["song_id"]
+            flags = ["--notes"] if job.kind == "notes" else ["--lyrics", "--notes"]
+            _run_pipeline(job, [str(PIPELINE_DIR / "resync.py"), str(DATA / "songs" / sid), *flags])
+            job.result = {"song_id": sid}
         else:
             sid, vol = job.params["song_id"], int(job.params["vocals"])
+            off = float(job.params.get("offset") or 0)
             job.stage = "Video"
             out = DATA / "videos" / sid / f"{sid}-gesang-{vol}.mp4"
             _run_pipeline(job, [str(PIPELINE_DIR / "render.py"), str(DATA / "songs" / sid),
-                                "--vocals", str(vol), "--out", str(out)])
+                                "--vocals", str(vol), "--offset", f"{off:.2f}", "--out", str(out)])
             if not out.exists():
                 raise RuntimeError("Das Video wurde nicht erstellt.")
             job.result = {"song_id": sid, "video": out.name}
@@ -177,6 +183,21 @@ def add_job(kind: str, label: str, params: dict) -> Job:
         del jobs[:-50]
     job_queue.put(job)
     return job
+
+
+def queue_missing_notes():
+    """Für ältere Songs ohne SingStar-Noten diese im Hintergrund nachberechnen."""
+    if not tools.is_ready():
+        return 0
+    n = 0
+    for d in sorted((DATA / "songs").iterdir()):
+        if d.is_dir() and (d / "vocals.mp3").exists() and not (d / "notes.json").exists():
+            meta = read_meta(d) or {}
+            add_job("notes", meta.get("title", d.name), {"song_id": d.name})
+            n += 1
+    if n:
+        log(f"Berechne Noten für {n} ältere Songs im Hintergrund")
+    return n
 
 
 def stop_all():
@@ -396,8 +417,22 @@ class Handler(BaseHTTPRequestHandler):
                 vol = 0
             if not SAFE_ID.match(sid) or not (DATA / "songs" / sid).is_dir():
                 return self.send_json({"error": "Song nicht gefunden."}, 404)
+            try:
+                off = max(-5.0, min(5.0, float(b.get("offset") or 0)))
+            except (TypeError, ValueError):
+                off = 0.0
             meta = read_meta(DATA / "songs" / sid) or {}
-            job = add_job("export", f"{meta.get('title', sid)} – Gesang {vol} %", {"song_id": sid, "vocals": vol})
+            job = add_job("export", f"{meta.get('title', sid)} – Gesang {vol} %",
+                          {"song_id": sid, "vocals": vol, "offset": off})
+            return self.send_json(job.as_dict(), 202)
+        if path == "/api/resync":
+            sid = str(b.get("song_id", ""))
+            if not tools.is_ready():
+                return self.send_json({"error": "Bitte Karaoke Studio zuerst am PC einrichten."}, 409)
+            if not SAFE_ID.match(sid) or not (DATA / "songs" / sid).is_dir():
+                return self.send_json({"error": "Song nicht gefunden."}, 404)
+            meta = read_meta(DATA / "songs" / sid) or {}
+            job = add_job("resync", meta.get("title", sid), {"song_id": sid})
             return self.send_json(job.as_dict(), 202)
         m = re.match(r"^/api/songs/([a-z0-9-]+)/delete$", path)
         if m:
@@ -463,6 +498,7 @@ def start(port: int = 0) -> int:
     threading.Thread(target=worker, daemon=True).start()
     if load_settings().get("lan"):
         set_lan(True)
+    queue_missing_notes()
     port = internal_server.server_address[1]
     log(f"Interner Server auf Port {port}, Daten in {DATA}")
     return port

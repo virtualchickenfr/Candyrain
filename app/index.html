@@ -119,6 +119,7 @@
       <div class="spinner" aria-hidden="true"></div>
       <p id="p-loading-text">Lade Song …</p>
     </div>
+    <canvas class="notes-lane" id="notes-lane" hidden aria-hidden="true"></canvas>
     <div class="lyrics" id="lyrics" aria-live="off"></div>
   </div>
 
@@ -151,6 +152,15 @@
         <span class="fader-label">Musik <output id="o-music">100 %</output></span>
         <input id="vol-music" type="range" min="0" max="100" value="100">
       </label>
+    </div>
+
+    <div class="timing" id="timing">
+      <span class="timing-label">Lyrics</span>
+      <button class="btn btn-ghost btn-small" id="btn-earlier" aria-label="Lyrics früher anzeigen">− früher</button>
+      <output id="o-offset">±0,0 s</output>
+      <button class="btn btn-ghost btn-small" id="btn-later" aria-label="Lyrics später anzeigen">später +</button>
+      <button class="btn btn-ghost btn-small" id="btn-notes-toggle" aria-pressed="true">Noten an</button>
+      <button class="btn btn-ghost btn-small" id="btn-resync" hidden>Timing neu berechnen</button>
     </div>
 
     <div class="dock-actions">

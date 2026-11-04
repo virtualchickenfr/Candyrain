@@ -167,7 +167,15 @@ input[type=file] { padding: 10px 0; }
 .now strong, .now span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .now span { color: var(--muted); font-size: .9rem; }
 
-.stage { display: grid; place-items: center; padding: 0 20px; min-height: 0; }
+.stage { display: flex; flex-direction: column; align-items: center; justify-content: safe center; gap: 3vh; padding: 8px 20px 0; min-height: 0; overflow: hidden; }
+.notes-lane { width: min(1100px, 100%); height: clamp(90px, 22vh, 230px); flex: none; }
+@media (max-height: 760px) { .notes-lane { height: clamp(80px, 16vh, 150px); } .stage { gap: 2vh; } }
+.timing { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: .85rem; color: var(--muted); }
+.timing-label { font-weight: 600; margin-right: 2px; }
+.timing output { min-width: 58px; text-align: center; font-variant-numeric: tabular-nums; color: var(--cream); }
+.btn-small { padding: 6px 10px; font-size: .82rem; }
+#btn-notes-toggle[aria-pressed=false] { opacity: .6; }
+#btn-resync { margin-left: auto; }
 .lyrics {
   width: 100%; max-width: 1100px; text-align: center;
   display: grid; gap: .55em;

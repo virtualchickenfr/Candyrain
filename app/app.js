@@ -179,10 +179,11 @@ const seenDone = new Set(store.get("seenDone", []));
 async function loadLocalJobs() {
   let list = [];
   try { list = await api("/api/jobs"); } catch { jobTimer = setTimeout(loadJobs, 5000); return; }
+  list = list.filter((j) => j.kind !== "notes");
   const active = list.filter((j) => j.state === "queued" || j.state === "running");
   const failed = list.filter((j) => j.state === "failed" && !seenDone.has(j.id));
   const finished = list.filter((j) => j.state === "done" && !seenDone.has(j.id));
-  const stageText = { "Lade Audio": "Lädt den Song", "Trenne Gesang": "Trennt Gesang und Musik", "Lyrics": "Sucht und ordnet die Lyrics", "Speichern": "Speichert", "Video": "Erstellt das Video" };
+  const stageText = { "Lade Audio": "Lädt den Song", "Trenne Gesang": "Trennt Gesang und Musik", "Lyrics": "Sucht und ordnet die Lyrics", "Speichern": "Speichert", "Noten": "Berechnet die Noten", "Video": "Erstellt das Video" };
   $("#jobs").innerHTML = [...active, ...failed].map((j) => {
     const mins = j.started ? Math.max(0, Math.round((Date.now() / 1000 - j.started) / 60)) : 0;
     const state = j.state === "failed" ? "failed" : j.state === "queued" ? "queued" : "running";
@@ -190,7 +191,7 @@ async function loadLocalJobs() {
       : state === "queued" ? "Wartet, bis der vorherige Song fertig ist …"
       : `${stageText[j.stage] || "Arbeitet"} … · seit ${mins} Min.`;
     return `<div class="job ${state}"><span class="dot"></span>
-      <span class="job-text"><b>${j.kind === "export" ? "Video: " : ""}${esc(j.label)}</b><span>${esc(text)}</span></span>
+      <span class="job-text"><b>${j.kind === "export" ? "Video: " : j.kind === "resync" ? "Timing: " : ""}${esc(j.label)}</b><span>${esc(text)}</span></span>
       ${state === "failed" ? `<button class="btn btn-ghost" data-dismiss="${esc(j.id)}">OK</button>` : ""}</div>`;
   }).join("");
   const seenBefore = store.get("seenInit", false);
@@ -202,6 +203,8 @@ async function loadLocalJobs() {
       if (finished.some((j) => j.kind === "export")) toast("Dein Video ist fertig – unter „Videos“ im Player.");
     }
     if (finished.some((j) => j.kind === "song")) loadSongs();
+    const rs = finished.find((j) => j.kind === "resync" && current && j.result?.song_id === current.id);
+    if (rs && !$("#view-player").hidden) { toast("Timing neu berechnet ✓"); store.del(`offset.${current.id}`); openPlayer(current); }
   }
   store.set("seenInit", true);
   jobTimer = setTimeout(loadJobs, active.length ? 3000 : 15000);
@@ -414,10 +417,16 @@ const engine = {
     this.gInst.gain.setTargetAtTime(music, now, 0.03);
   },
   unload() { this.pause(); this.inst = this.voc = null; this.offset = 0; },
+  get heard() {
+    if (!this.playing || !this.ctx) return this.time;
+    const lat = (this.ctx.outputLatency || 0) + (this.ctx.baseLatency || 0);
+    return Math.max(0, this.time - Math.min(lat, 0.5));
+  },
 };
 
 // ------------------------------------------------------------------ Player
 let current = null, lyrics = null, curLine = -2, raf = 0, loadToken = 0;
+let notesData = null, lyricOffset = 0, showNotes = store.get("showNotes", true);
 
 async function openPlayer(song) {
   if (!song) return;
@@ -430,6 +439,12 @@ async function openPlayer(song) {
   $("#lyrics").innerHTML = ""; $("#p-loading").hidden = false; $("#p-loading-text").textContent = "Lade Song …";
   $("#btn-play").disabled = true;
   const my = ++loadToken;
+  notesData = null; $("#notes-lane").hidden = true;
+  lyricOffset = store.get(`offset.${song.id}`, 0); renderOffset();
+  $("#btn-resync").hidden = !(LOCAL && LOCAL.ready);
+  rawFile(`songs/${song.id}/notes.json`).then((r) => r.json()).then((d) => {
+    if (current === song && d?.notes?.length) { notesData = d; $("#notes-lane").hidden = !showNotes; sizeLane(); }
+  }).catch(() => {});
   const prefs = store.get(`mix.${song.id}`, null);
   $("#vol-voice").value = prefs?.voice ?? store.get("voiceDefault", 0);
   $("#vol-music").value = prefs?.music ?? 100;
@@ -517,8 +532,9 @@ function renderLyrics(t, force = false) {
 function tick() {
   cancelAnimationFrame(raf);
   const loop = () => {
-    const t = engine.time;
-    if (lyrics) renderLyrics(t);
+    const t = engine.heard;
+    if (lyrics) renderLyrics(t - lyricOffset);
+    if (notesData && showNotes) drawNotes(t);
     $("#t-cur").textContent = fmt(t);
     const seek = $("#seek");
     if (!seek.dragging && engine.duration) { seek.value = Math.round((t / engine.duration) * 1000); fillRange(seek); }
@@ -586,7 +602,7 @@ $("#btn-export").addEventListener("click", async () => {
   const v = Number($("#vol-voice").value);
   if (LOCAL) {
     try {
-      await api("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_id: current.id, vocals: v }) });
+      await api("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_id: current.id, vocals: v, offset: lyricOffset }) });
       toast(`Video mit ${v} % Gesang wird erstellt.`); loadJobs();
     } catch (e) { toast(friendlyError(e), 6000); }
     return;
@@ -605,7 +621,7 @@ $("#btn-export").addEventListener("click", async () => {
   const btn = $("#btn-export"); btn.disabled = true;
   try {
     await gh(repoPath(`/actions/workflows/render.yml/dispatches`), {
-      method: "POST", body: { ref: branch, inputs: { song_id: current.id, vocals: String(v), request_id: uid() } },
+      method: "POST", body: { ref: branch, inputs: { song_id: current.id, vocals: String(v), offset: String(lyricOffset), request_id: uid() } },
     });
     toast(`Video mit ${v} % Gesang wird erstellt – dauert ein paar Minuten.`);
     setTimeout(loadJobs, 2500);
@@ -671,6 +687,106 @@ $("#video-list").addEventListener("click", async (e) => {
 $("#dlg-videos").addEventListener("close", () => { const v = $("#video-player"); v.pause(); });
 
 // ------------------------------------------------------------------ Start
+// ------------------------------------------------------------------ SingStar-Noten (nur Anzeige)
+const lane = $("#notes-lane");
+const lctx = lane.getContext("2d");
+let laneW = 0, laneH = 0;
+
+function sizeLane() {
+  const r = lane.getBoundingClientRect();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  laneW = r.width; laneH = r.height;
+  lane.width = Math.round(r.width * dpr); lane.height = Math.round(r.height * dpr);
+  lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", () => { if (!lane.hidden) sizeLane(); });
+
+function notePages() {
+  const L = lyrics?.lines || [];
+  if (L.length) return L.map((l) => [l.start + lyricOffset - 0.25, l.end + lyricOffset + 0.25]);
+  const pages = []; const end = engine.duration || 0;
+  for (let t = 0; t < end; t += 6) pages.push([t, Math.min(end, t + 6)]);
+  return pages;
+}
+
+function pageAt(pages, t) {
+  for (let i = 0; i < pages.length; i++) {
+    const [p0, p1] = pages[i];
+    const prevEnd = i ? pages[i - 1][1] : -Infinity;
+    if (t >= Math.max(p0 - 1.2, prevEnd) && t <= p1 + 0.15) return pages[i];
+  }
+  return null;
+}
+
+function roundRect(x, y, w, h, r) {
+  lctx.beginPath();
+  if (lctx.roundRect) lctx.roundRect(x, y, w, h, r); else lctx.rect(x, y, w, h);
+}
+
+function drawNotes(t) {
+  if (!laneW) sizeLane();
+  const W = laneW, H = laneH;
+  lctx.clearRect(0, 0, W, H);
+  roundRect(0, 0, W, H, 16); lctx.fillStyle = "rgba(20, 8, 28, .55)"; lctx.fill();
+  const page = pageAt(notePages(), t);
+  if (!page) return;
+  const [p0, p1] = page;
+  const ns = notesData.notes.filter((n) => n[1] > p0 && n[0] < p1);
+  if (!ns.length) return;
+  let lo = Infinity, hi = -Infinity;
+  for (const n of ns) { lo = Math.min(lo, n[2]); hi = Math.max(hi, n[2]); }
+  const span = Math.max(12, hi - lo + 2), base = (lo + hi) / 2 - span / 2;
+  const padX = 18, padY = 14, iw = W - 2 * padX, ih = H - 2 * padY;
+  const x = (tt) => padX + ((tt - p0) / Math.max(0.5, p1 - p0)) * iw;
+  const rowH = ih / span, barH = Math.max(7, rowH * 0.8);
+  for (const [s0, e0, m] of ns) {
+    const s = Math.max(s0, p0), e = Math.min(e0, p1);
+    const bx = x(s), bw = Math.max(5, x(e) - bx), by = padY + ih - (m - base) * rowH - barH / 2;
+    roundRect(bx, by, bw, barH, barH / 2);
+    lctx.fillStyle = "rgba(255, 242, 220, .16)"; lctx.fill();
+    lctx.strokeStyle = "rgba(255, 242, 220, .55)"; lctx.lineWidth = 1.5; lctx.stroke();
+    if (t > s) {
+      const fw = Math.min(bw, x(Math.min(t, e)) - bx);
+      if (fw > 0) {
+        lctx.save(); lctx.beginPath(); lctx.rect(bx - 2, by - 4, fw + 2, barH + 8); lctx.clip();
+        roundRect(bx, by, bw, barH, barH / 2);
+        lctx.fillStyle = "#ffb627"; lctx.shadowColor = "rgba(255, 182, 39, .6)"; lctx.shadowBlur = 10; lctx.fill();
+        lctx.restore();
+      }
+    }
+  }
+  if (t >= p0 && t <= p1) {
+    const px = x(t);
+    lctx.fillStyle = "rgba(255, 242, 220, .85)"; lctx.fillRect(px - 1, 6, 2, H - 12);
+  }
+}
+
+// ------------------------------------------------------------------ Lyrics-Timing (pro Song)
+function renderOffset() {
+  const v = Math.round(lyricOffset * 10) / 10;
+  $("#o-offset").textContent = v === 0 ? "±0,0 s" : `${v > 0 ? "+" : "−"}${Math.abs(v).toFixed(1).replace(".", ",")} s`;
+  $("#btn-notes-toggle").textContent = showNotes ? "Noten an" : "Noten aus";
+  $("#btn-notes-toggle").setAttribute("aria-pressed", String(showNotes));
+}
+function nudge(d) {
+  if (!current) return;
+  lyricOffset = Math.max(-5, Math.min(5, Math.round((lyricOffset + d) * 10) / 10));
+  store.set(`offset.${current.id}`, lyricOffset); curLine = -2; renderOffset();
+}
+$("#btn-earlier").addEventListener("click", () => nudge(-0.1));
+$("#btn-later").addEventListener("click", () => nudge(0.1));
+$("#btn-notes-toggle").addEventListener("click", () => {
+  showNotes = !showNotes; store.set("showNotes", showNotes); renderOffset();
+  $("#notes-lane").hidden = !(showNotes && notesData); if (!$("#notes-lane").hidden) sizeLane();
+});
+$("#btn-resync").addEventListener("click", async () => {
+  if (!current || !LOCAL) return;
+  try {
+    await api("/api/resync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_id: current.id }) });
+    toast("Timing und Noten werden neu berechnet – dauert 1–3 Minuten."); loadJobs();
+  } catch (e) { toast(friendlyError(e), 5000); }
+});
+
 // ------------------------------------------------------------------ PC-App: Einrichtung & WLAN
 const IS_DESKTOP = ["127.0.0.1", "localhost"].includes(location.hostname);
 let installTimer = null;
