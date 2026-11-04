@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#24112c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Karaoke Studio</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Einrichtung -->
+<section id="view-setup" class="view" hidden>
+  <div class="setup">
+    <h1 class="brand">Karaoke<br>Studio</h1>
+    <p class="lead">Einmal pro Gerät verbinden, dann kann es losgehen.</p>
+    <form id="setup-form" class="stack">
+      <label class="field">
+        <span>GitHub-Schlüssel (Token)</span>
+        <input id="setup-token" type="password" autocomplete="off" placeholder="github_pat_…" required>
+      </label>
+      <label class="field">
+        <span>Repository</span>
+        <input id="setup-repo" type="text" autocomplete="off" placeholder="name/karaoke-studio" required>
+      </label>
+      <label class="field">
+        <span>Dein Name</span>
+        <input id="setup-name" type="text" autocomplete="given-name" placeholder="z. B. Mama">
+      </label>
+      <p id="setup-error" class="error" role="alert"></p>
+      <button class="btn btn-primary" type="submit">Verbinden</button>
+    </form>
+    <details class="help">
+      <summary>Wie bekomme ich einen Schlüssel?</summary>
+      <ol>
+        <li>Öffne <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a>.</li>
+        <li>Name: „Karaoke“, Ablauf: z. B. 1 Jahr.</li>
+        <li>Repository access: <b>Only select repositories</b> → <b>karaoke-studio</b>.</li>
+        <li>Permissions → Repository: <b>Actions</b> und <b>Contents</b> auf „Read and write“.</li>
+        <li>„Generate token“ tippen, den Schlüssel kopieren und hier einfügen.</li>
+      </ol>
+      <p>Der Schlüssel bleibt nur auf diesem Gerät gespeichert.</p>
+    </details>
+  </div>
+</section>
+
+<!-- Bibliothek -->
+<section id="view-library" class="view" hidden>
+  <header class="topbar">
+    <h1 class="brand brand-small">Karaoke Studio</h1>
+    <button class="icon-btn" id="btn-settings" aria-label="Einstellungen">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+    </button>
+  </header>
+
+  <main class="library">
+    <button class="add-song" id="btn-add">
+      <span class="add-plus" aria-hidden="true">+</span>
+      <span><b>Song hinzufügen</b><small>YouTube-Link oder MP3</small></span>
+    </button>
+
+    <div id="jobs" class="jobs" aria-live="polite"></div>
+
+    <div class="list-head">
+      <h2>Eure Songs</h2>
+      <input id="search" type="search" placeholder="Suchen" aria-label="Songs durchsuchen">
+    </div>
+    <ul id="song-list" class="song-list"></ul>
+    <p id="library-empty" class="empty" hidden>Noch keine Songs. Füge oben den ersten hinzu – nach etwa 10–15 Minuten taucht er hier auf.</p>
+    <p id="library-error" class="error" role="alert"></p>
+  </main>
+</section>
+
+<!-- Player -->
+<section id="view-player" class="view player" hidden>
+  <div class="player-bg" id="player-bg"></div>
+  <header class="topbar player-top">
+    <button class="icon-btn" id="btn-back" aria-label="Zurück zur Liste">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+    </button>
+    <div class="now">
+      <strong id="p-title"></strong>
+      <span id="p-artist"></span>
+    </div>
+    <button class="icon-btn" id="btn-fullscreen" aria-label="Vollbild">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    </button>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="loading" id="p-loading">
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="p-loading-text">Lade Song …</p>
+    </div>
+    <div class="lyrics" id="lyrics" aria-live="off"></div>
+  </div>
+
+  <footer class="dock">
+    <div class="seek-row">
+      <span id="t-cur" class="time">0:00</span>
+      <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Position im Song">
+      <span id="t-dur" class="time">0:00</span>
+    </div>
+
+    <div class="controls">
+      <button class="icon-btn" id="btn-rew" aria-label="10 Sekunden zurück">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5M18 7l-5 5 5 5"/></svg>
+      </button>
+      <button class="play" id="btn-play" aria-label="Abspielen">
+        <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
+        <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-fwd" aria-label="10 Sekunden vor">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5M6 7l5 5-5 5"/></svg>
+      </button>
+    </div>
+
+    <div class="mixer">
+      <label class="fader fader-voice">
+        <span class="fader-label">Gesang <output id="o-voice">0 %</output></span>
+        <input id="vol-voice" type="range" min="0" max="100" value="0">
+      </label>
+      <label class="fader">
+        <span class="fader-label">Musik <output id="o-music">100 %</output></span>
+        <input id="vol-music" type="range" min="0" max="100" value="100">
+      </label>
+    </div>
+
+    <div class="dock-actions">
+      <button class="btn btn-ghost" id="btn-export">Video mit dieser Gesangslautstärke erstellen</button>
+      <button class="btn btn-ghost" id="btn-videos">Videos</button>
+    </div>
+  </footer>
+</section>
+
+<!-- Song hinzufügen -->
+<dialog id="dlg-add" class="sheet">
+  <form method="dialog" id="add-form" class="stack">
+    <h2>Song hinzufügen</h2>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" class="tab" aria-selected="true" data-tab="yt">YouTube-Link</button>
+      <button type="button" role="tab" class="tab" aria-selected="false" data-tab="file">MP3-Datei</button>
+    </div>
+    <label class="field" data-pane="yt">
+      <span>Link</span>
+      <input id="add-url" type="url" inputmode="url" placeholder="https://youtu.be/…">
+    </label>
+    <label class="field" data-pane="file" hidden>
+      <span>Datei (MP3, M4A, WAV …)</span>
+      <input id="add-file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg">
+    </label>
+    <div class="two">
+      <label class="field"><span>Interpret <i>optional</i></span><input id="add-artist" type="text"></label>
+      <label class="field"><span>Titel <i>optional</i></span><input id="add-title" type="text"></label>
+    </div>
+    <p class="hint">Mit Interpret und Titel finden wir die Lyrics zuverlässiger.</p>
+    <p id="add-error" class="error" role="alert"></p>
+    <div class="row-end">
+      <button class="btn btn-ghost" value="cancel" formnovalidate>Abbrechen</button>
+      <button class="btn btn-primary" id="add-submit" value="ok">Song erstellen</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Videos -->
+<dialog id="dlg-videos" class="sheet">
+  <form method="dialog" class="stack">
+    <h2>Videos zu diesem Song</h2>
+    <ul id="video-list" class="video-list"></ul>
+    <p id="videos-note" class="hint"></p>
+    <div class="row-end"><button class="btn btn-ghost" value="close">Schließen</button></div>
+  </form>
+</dialog>
+
+<!-- Einstellungen -->
+<dialog id="dlg-settings" class="sheet">
+  <form method="dialog" class="stack">
+    <h2>Einstellungen</h2>
+    <p id="settings-info" class="hint"></p>
+    <label class="field"><span>Dein Name</span><input id="set-name" type="text"></label>
+    <div class="row-end">
+      <button class="btn btn-ghost" id="btn-logout" type="button">Gerät trennen</button>
+      <button class="btn btn-primary" value="save" id="btn-save-settings">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

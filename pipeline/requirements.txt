@@ -1,0 +1,6 @@
+# torch/torchaudio werden im Workflow vorher als CPU-Version installiert
+demucs==4.0.1
+soundfile>=0.12
+openai-whisper==20240930
+stable-ts>=2.17,<3
+yt-dlp[default]

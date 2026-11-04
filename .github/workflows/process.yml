@@ -1,0 +1,111 @@
+name: Song verarbeiten
+run-name: "🎤 ${{ inputs.title || inputs.url || inputs.upload_path }} [${{ inputs.request_id || 'manuell' }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "YouTube-Link"
+        required: false
+        type: string
+      upload_path:
+        description: "ODER: Pfad zu einer hochgeladenen Datei (z. B. inbox/song.mp3)"
+        required: false
+        type: string
+      artist:
+        description: "Interpret (optional, hilft bei der Lyrics-Suche)"
+        required: false
+        type: string
+      title:
+        description: "Songtitel (optional, hilft bei der Lyrics-Suche)"
+        required: false
+        type: string
+      added_by:
+        description: "Wer hat den Song hinzugefügt?"
+        required: false
+        type: string
+      request_id:
+        description: "(wird von der App gesetzt)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      # yt-dlp braucht für YouTube eine JavaScript-Laufzeit
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: ffmpeg installieren
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: KI-Modelle aus dem Cache holen
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/torch/hub/checkpoints
+            ~/.cache/whisper
+          key: models-htdemucs-whisper-small-v1
+
+      - name: Python-Pakete installieren
+        run: |
+          pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r pipeline/requirements.txt
+
+      - name: Song verarbeiten
+        id: proc
+        env:
+          IN_URL: ${{ inputs.url }}
+          IN_FILE: ${{ inputs.upload_path }}
+          IN_ARTIST: ${{ inputs.artist }}
+          IN_TITLE: ${{ inputs.title }}
+          IN_BY: ${{ inputs.added_by }}
+        run: |
+          if [ -n "$IN_URL" ]; then SRC=(--url "$IN_URL");
+          elif [ -n "$IN_FILE" ]; then
+            case "$IN_FILE" in inbox/*) ;; *) echo "Ungültiger Upload-Pfad"; exit 1;; esac
+            SRC=(--file "$IN_FILE");
+          else echo "::error::Bitte einen YouTube-Link oder eine Datei angeben"; exit 1; fi
+          python pipeline/process.py "${SRC[@]}" --artist "$IN_ARTIST" --title "$IN_TITLE" \
+            --added-by "$IN_BY" --video "out/video.mp4"
+
+      - name: Ergebnis speichern
+        env:
+          SONG_ID: ${{ steps.proc.outputs.song_id }}
+          IN_FILE: ${{ inputs.upload_path }}
+          LABEL: ${{ steps.proc.outputs.label }}
+        run: |
+          git config user.name "karaoke-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "songs/$SONG_ID"
+          if [ -n "$IN_FILE" ] && [ -f "$IN_FILE" ]; then git rm -q "$IN_FILE"; fi
+          git commit -q -m "🎤 Neuer Song: $LABEL"
+          for i in 1 2 3 4 5; do
+            git pull -q --rebase origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
+
+      - name: Video veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SONG_ID: ${{ steps.proc.outputs.song_id }}
+          LABEL: ${{ steps.proc.outputs.label }}
+        run: |
+          mv out/video.mp4 "out/${SONG_ID}-gesang-0.mp4"
+          gh release create "song-${SONG_ID}" "out/${SONG_ID}-gesang-0.mp4" \
+            --title "$LABEL" --notes "Karaoke-Video. Weitere Versionen mit anderer Gesangslautstärke kannst du in der App exportieren."

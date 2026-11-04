@@ -1,0 +1,66 @@
+name: Video exportieren
+run-name: "🎬 ${{ inputs.song_id }} – Gesang ${{ inputs.vocals }} % [${{ inputs.request_id || 'manuell' }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      song_id:
+        description: "Song-ID (Ordnername unter songs/)"
+        required: true
+        type: string
+      vocals:
+        description: "Gesangslautstärke in Prozent (0–100)"
+        required: true
+        default: "0"
+        type: string
+      request_id:
+        description: "(wird von der App gesetzt)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Eingaben prüfen
+        env:
+          SONG_ID: ${{ inputs.song_id }}
+          VOCALS: ${{ inputs.vocals }}
+        run: |
+          [[ "$SONG_ID" =~ ^[a-z0-9-]+$ ]] || { echo "::error::Ungültige Song-ID"; exit 1; }
+          [[ "$VOCALS" =~ ^[0-9]{1,3}$ ]] && [ "$VOCALS" -le 100 ] || { echo "::error::Lautstärke muss 0–100 sein"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            pipeline
+            songs/${{ inputs.song_id }}
+
+      - name: ffmpeg installieren
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Video rendern
+        env:
+          SONG_ID: ${{ inputs.song_id }}
+          VOCALS: ${{ inputs.vocals }}
+        run: |
+          mkdir -p out
+          python3 pipeline/render.py "songs/$SONG_ID" --vocals "$VOCALS" --out "out/${SONG_ID}-gesang-${VOCALS}.mp4"
+
+      - name: Video veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SONG_ID: ${{ inputs.song_id }}
+          VOCALS: ${{ inputs.vocals }}
+        run: |
+          FILE="out/${SONG_ID}-gesang-${VOCALS}.mp4"
+          if gh release view "song-${SONG_ID}" >/dev/null 2>&1; then
+            gh release upload "song-${SONG_ID}" "$FILE" --clobber
+          else
+            TITLE=$(python3 -c "import json;m=json.load(open('songs/$SONG_ID/meta.json'));print(f\"{m.get('artist','')} – {m.get('title','')}\")")
+            gh release create "song-${SONG_ID}" "$FILE" --title "$TITLE" --notes "Karaoke-Video"
+          fi
