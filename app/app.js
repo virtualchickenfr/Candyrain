@@ -55,10 +55,10 @@ async function copyText(t) { try { await navigator.clipboard.writeText(t); retur
 const VIDEO_BRANCH = "videos";
 
 function friendlyError(e) {
-  if (e.status === 401) return "Der Schlüssel ist ungültig oder abgelaufen. Trenne das Gerät in den Einstellungen und verbinde es neu.";
+  if (e.status === 401) return "Der Schlüssel ist ungültig oder abgelaufen. Lösche ihn in den Einstellungen oder trage einen neuen ein.";
+  if (e.status === 403 && !cfg.token) return "GitHub bremst gerade (zu viele Abrufe). In ein paar Minuten klappt es wieder.";
   if (e.status === 403) return "Der Schlüssel darf das nicht. Prüfe, ob „Actions“ und „Contents“ auf „Read and write“ stehen.";
   if (e.status === 404) return "Nicht gefunden. Ist das Repository noch öffentlich?";
-  if (e.status === 403 && !cfg.token) return "GitHub bremst gerade (zu viele Abrufe). In ein paar Minuten klappt es wieder.";
   if (e instanceof TypeError) return "Keine Verbindung. Prüfe das Internet und versuche es noch einmal.";
   return `GitHub meldet: ${e.message}`;
 }
