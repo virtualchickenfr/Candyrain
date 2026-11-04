@@ -111,10 +111,7 @@ jobs:
 
       - name: Video veröffentlichen
         env:
-          GH_TOKEN: ${{ github.token }}
           SONG_ID: ${{ steps.proc.outputs.song_id }}
-          LABEL: ${{ steps.proc.outputs.label }}
         run: |
           mv out/video.mp4 "out/${SONG_ID}-gesang-0.mp4"
-          gh release create "song-${SONG_ID}" "out/${SONG_ID}-gesang-0.mp4" \
-            --title "$LABEL" --notes "Karaoke-Video. Weitere Versionen mit anderer Gesangslautstärke kannst du in der App exportieren."
+          bash pipeline/publish_video.sh "$SONG_ID" "out/${SONG_ID}-gesang-0.mp4"

@@ -43,7 +43,8 @@ async function gh(path, { method = "GET", body, accept = "application/vnd.github
   return res.json();
 }
 const repoPath = (p = "") => `/repos/${cfg.repo}${p}`;
-const rawFile = (path) => gh(repoPath(`/contents/${encodeURI(path)}?ref=${branch}`), { accept: "application/vnd.github.raw+json", raw: true });
+const rawFile = (path, ref = branch) => gh(repoPath(`/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`), { accept: "application/vnd.github.raw+json", raw: true });
+const VIDEO_BRANCH = "videos";
 
 function friendlyError(e) {
   if (e.status === 401) return "Der Schlüssel ist ungültig oder abgelaufen. Trenne das Gerät in den Einstellungen und verbinde es neu.";
@@ -478,42 +479,56 @@ $("#btn-export").addEventListener("click", async () => {
   finally { btn.disabled = false; }
 });
 
+const videoBlobs = new Map();
+async function videoBlob(path) {
+  if (!videoBlobs.has(path)) {
+    videoBlobs.set(path, rawFile(path, VIDEO_BRANCH).then((r) => r.blob()).catch((e) => { videoBlobs.delete(path); throw e; }));
+  }
+  return videoBlobs.get(path);
+}
+
 $("#btn-videos").addEventListener("click", async () => {
   if (!current) return;
   const list = $("#video-list"); const note = $("#videos-note");
   list.innerHTML = `<li><span>Lade …</span></li>`; note.textContent = "";
+  $("#video-player").hidden = true; $("#video-player").removeAttribute("src");
   $("#dlg-videos").showModal();
   try {
-    const rel = await gh(repoPath(`/releases/tags/song-${current.id}`));
-    const assets = (rel.assets || []).filter((a) => a.name.endsWith(".mp4"))
+    const files = (await gh(repoPath(`/contents/${current.id}?ref=${VIDEO_BRANCH}`)))
+      .filter((f) => f.type === "file" && f.name.endsWith(".mp4"))
       .sort((a, b) => a.name.localeCompare(b.name, "de", { numeric: true }));
-    list.innerHTML = assets.map((a) => {
-      const m = a.name.match(/gesang-(\d+)/);
-      return `<li><b>${m ? `${m[1]} % Gesang` : esc(a.name)}</b><span>${(a.size / 1048576).toFixed(0)} MB</span>
-        <button type="button" class="btn btn-primary" data-asset="${a.id}" data-name="${esc(a.name)}" data-url="${esc(a.browser_download_url)}">Herunterladen</button></li>`;
+    list.innerHTML = files.map((f) => {
+      const m = f.name.match(/gesang-(\d+)/);
+      return `<li><b>${m ? `${m[1]} % Gesang` : esc(f.name)}</b><span>${Math.max(1, Math.round(f.size / 1048576))} MB</span>
+        <span class="vid-actions">
+          <button type="button" class="btn btn-ghost" data-play="${esc(f.path)}">Ansehen</button>
+          <button type="button" class="btn btn-primary" data-save="${esc(f.path)}" data-name="${esc(f.name)}">Speichern</button>
+        </span></li>`;
     }).join("") || `<li><span>Noch keine Videos.</span></li>`;
   } catch (e) {
-    list.innerHTML = `<li><span>${e.status === 404 ? "Noch keine Videos. Erstelle eins mit dem Button im Player." : esc(friendlyError(e))}</span></li>`;
+    list.innerHTML = `<li><span>${e.status === 404 ? "Noch keine Videos. Erstelle eins mit dem Button im Player – nach ein paar Minuten ist es hier." : esc(friendlyError(e))}</span></li>`;
   }
 });
 
 $("#video-list").addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-asset]"); if (!b) return;
-  b.disabled = true; b.textContent = "Lädt …";
+  const b = e.target.closest("[data-play],[data-save]"); if (!b) return;
+  const path = b.dataset.play || b.dataset.save;
+  const label = b.textContent; b.disabled = true; b.textContent = "Lädt …";
   try {
-    const res = await gh(repoPath(`/releases/assets/${b.dataset.asset}`), { accept: "application/octet-stream", raw: true });
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob); a.download = b.dataset.name; document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-    b.textContent = "Gespeichert";
-  } catch {
-    // Fallback: direkt bei GitHub öffnen (dort muss man angemeldet sein)
-    window.open(b.dataset.url, "_blank", "noopener");
-    $("#videos-note").textContent = "Das Video wurde bei GitHub geöffnet. Falls du dort nicht angemeldet bist, melde dich an und tippe noch einmal.";
-    b.textContent = "Herunterladen";
-  } finally { b.disabled = false; }
+    const url = URL.createObjectURL(await videoBlob(path));
+    if (b.dataset.play) {
+      engine.pause(); setPlayingUI(false);
+      const v = $("#video-player"); v.src = url; v.hidden = false; v.play().catch(() => {});
+    } else {
+      const a = document.createElement("a");
+      a.href = url; a.download = b.dataset.name; document.body.append(a); a.click(); a.remove();
+      $("#videos-note").textContent = "Das Video wird gespeichert. Auf dem iPhone: im Video auf Teilen tippen → „Video sichern“.";
+    }
+  } catch (err) {
+    $("#videos-note").textContent = friendlyError(err);
+  } finally { b.disabled = false; b.textContent = label; }
 });
+$("#dlg-videos").addEventListener("close", () => { const v = $("#video-player"); v.pause(); });
 
 // ------------------------------------------------------------------ Start
 function openLibrary() {

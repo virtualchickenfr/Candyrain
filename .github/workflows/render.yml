@@ -60,14 +60,6 @@ jobs:
 
       - name: Video veröffentlichen
         env:
-          GH_TOKEN: ${{ github.token }}
           SONG_ID: ${{ inputs.song_id }}
           VOCALS: ${{ inputs.vocals }}
-        run: |
-          FILE="out/${SONG_ID}-gesang-${VOCALS}.mp4"
-          if gh release view "song-${SONG_ID}" >/dev/null 2>&1; then
-            gh release upload "song-${SONG_ID}" "$FILE" --clobber
-          else
-            TITLE=$(python3 -c "import json;m=json.load(open('songs/$SONG_ID/meta.json'));print(f\"{m.get('artist','')} – {m.get('title','')}\")")
-            gh release create "song-${SONG_ID}" "$FILE" --title "$TITLE" --notes "Karaoke-Video"
-          fi
+        run: bash pipeline/publish_video.sh "$SONG_ID" "out/${SONG_ID}-gesang-${VOCALS}.mp4"

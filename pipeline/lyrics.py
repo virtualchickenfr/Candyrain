@@ -28,33 +28,41 @@ def _get(path: str, params: dict) -> object | None:
         return None
 
 
+def _usable(c: dict) -> bool:
+    """Aussortieren von kaputten/leeren Einträgen (z. B. nur ein Testwort)."""
+    if c.get("instrumental"):
+        return True
+    lines = clean_lines(c.get("plainLyrics") or "")
+    words = sum(len(l.split()) for l in lines)
+    return len(lines) >= 6 and words >= 30
+
+
 def find_lyrics(artist: str, title: str, duration: float) -> dict | None:
-    """Sucht passende Lyrics. Gibt das LRCLIB-Objekt zurück oder None."""
+    """Sucht passende Lyrics. Gibt das beste LRCLIB-Objekt zurück oder None."""
+    candidates: dict[int, dict] = {}
+
+    def add(items):
+        for c in items or []:
+            if isinstance(c, dict) and c.get("id") is not None:
+                candidates[c["id"]] = c
+
     if title:
         hit = _get("get", {"artist_name": artist or "", "track_name": title, "duration": round(duration)})
-        if isinstance(hit, dict) and (hit.get("plainLyrics") or hit.get("instrumental")):
-            return hit
+        if isinstance(hit, dict):
+            add([hit])
+        add(_get("search", {"track_name": title, "artist_name": artist} if artist else {"track_name": title}))
+    add(_get("search", {"q": f"{artist} {title}".strip()}))
 
-    candidates: list[dict] = []
-    queries = []
-    if title:
-        queries.append({"track_name": title, "artist_name": artist} if artist else {"track_name": title})
-    queries.append({"q": f"{artist} {title}".strip()})
-    for q in queries:
-        res = _get("search", q)
-        if isinstance(res, list):
-            candidates.extend(res)
-        if candidates:
-            break
+    usable = [c for c in candidates.values() if _usable(c)]
+    print(f"  LRCLIB: {len(candidates)} Treffer, {len(usable)} brauchbar")
 
     best, best_score = None, 1e9
-    for c in candidates:
-        if not c.get("plainLyrics") and not c.get("instrumental"):
-            continue
+    for c in usable:
         diff = abs((c.get("duration") or 0) - duration)
         if diff > 12:
             continue
-        score = diff - (3 if c.get("syncedLyrics") else 0)
+        n_lines = len(clean_lines(c.get("plainLyrics") or ""))
+        score = diff - (3 if c.get("syncedLyrics") else 0) - min(n_lines, 60) * 0.03
         if score < best_score:
             best, best_score = c, score
     return best
@@ -172,6 +180,9 @@ def _alignment_ok(lines: list[dict], synced: list[tuple[float, str]]) -> bool:
     if not lines:
         return False
     words = [w for ln in lines for w in ln["words"]]
+    if len(words) < 20:
+        print(f"  Ausrichtung verdächtig: nur {len(words)} Wörter")
+        return False
     zero = sum(1 for w in words if w["e"] - w["s"] < 0.02)
     if zero > 0.35 * len(words):
         print(f"  Ausrichtung verdächtig: {zero}/{len(words)} Wörter ohne Dauer")

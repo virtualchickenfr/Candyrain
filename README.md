@@ -17,7 +17,7 @@ App (Handy/PC) ──► GitHub Actions: process.yml
                      2. Gesang trennen (Demucs)
                      3. Lyrics suchen (LRCLIB) + Wort-Timing (stable-ts/Whisper)
                      4. songs/<id>/ speichern: instrumental.mp3, vocals.mp3, lyrics.json, meta.json
-                     5. Karaoke-Video als GitHub-Release hochladen
+                     5. Karaoke-Video in den Branch „videos“ legen
 App ◄── liest songs/ und spielt beide Spuren gemischt ab (Gesangsregler)
 App ──► render.yml: Video mit gewählter Gesangslautstärke
 ```
@@ -41,7 +41,7 @@ App ──► render.yml: Video mit gewählter Gesangslautstärke
 ## Ohne App testen
 
 Auf GitHub → **Actions** → **Song verarbeiten** → **Run workflow** → YouTube-Link einfügen.
-Nach ca. 10–15 Minuten liegt das Video unter **Releases**.
+Nach ca. 10–15 Minuten liegt das Video im Branch **videos** (Ordner mit der Song-ID).
 
 ## Gut zu wissen
 
